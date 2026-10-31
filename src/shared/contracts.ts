@@ -124,6 +124,11 @@ export interface LearnerContextAck {
   truncated: boolean
 }
 
+export interface VoiceTranscript {
+  text: string
+  durationMs: number
+}
+
 export const MAX_SEGMENT_TEXT = 4000
 export const MAX_RELATED_POINTS = 5
 export const MAX_TITLE_LENGTH = 200
@@ -139,3 +144,14 @@ export const MAX_LEARNER_SESSIONS = 64
 export const LEARNER_CONTEXT_TTL_MS = 30 * 60 * 1000
 export const LEARNER_POSITION_BUCKET_SEC = 15
 export const LEARNER_CONTEXT_SECTION_ORDER = 8500
+
+export const MAX_VOICE_DURATION_MS = 60000
+export const VOICE_SAMPLE_RATE = 16000
+export const VOICE_CHANNELS = 1
+export const VOICE_BITS_PER_SAMPLE = 16
+export const MAX_VOICE_TRANSCRIPT_CHARS = 2000
+export const VOICE_WAV_HEADER_BYTES = 44
+export const MAX_VOICE_WAV_BYTES =
+  VOICE_WAV_HEADER_BYTES + (VOICE_SAMPLE_RATE * VOICE_CHANNELS * (VOICE_BITS_PER_SAMPLE / 8) * MAX_VOICE_DURATION_MS) / 1000
+export const MAX_VOICE_BASE64_CHARS = Math.ceil(MAX_VOICE_WAV_BYTES / 3) * 4
+export const VOICE_REQUEST_TIMEOUT_MS = 40000

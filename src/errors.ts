@@ -3,6 +3,7 @@ import {
   MAX_LEARNER_SELECTED_CHARS,
   MAX_LEARNER_SELECTED_RAW,
   MAX_TITLE_LENGTH,
+  MAX_VOICE_DURATION_MS,
   MAX_WATCHED_SEC,
 } from './shared/contracts.js'
 import { sanitizeInlineUntrusted, sanitizeUntrusted, truncateCodePoints } from './untrusted.js'
@@ -56,6 +57,14 @@ export class InvalidResponseError extends Error {
   }
 }
 
+/** 语音失败文案已按学员可见口径收敛，原样透出，不拼接内部状态码。 */
+export class VoiceTranscriptionError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'VoiceTranscriptionError'
+  }
+}
+
 export async function readJsonResponse(response: Response, service = '课程服务'): Promise<unknown> {
   const declared = response.headers.get('content-length')
   if (declared !== null && Number(declared) > MAX_RESPONSE_BYTES) {
@@ -93,6 +102,7 @@ export async function readJsonResponse(response: Response, service = '课程服�
 
 function messageForStatus(status: number): string {
   if (status === 404) return '请求的内容不存在或已下架'
+  if (status === 413) return '请求内容过大，请稍后重试'
   if (status === 429) return '请求过于频繁，请稍后重试'
   if (status >= 500) return '课程服务暂时不可用，请稍后重试'
   return '课程服务请求失败，请稍后重试'
@@ -233,11 +243,19 @@ export function optionalSelectedText(value: unknown): { text: string | undefined
   return { text, truncated }
 }
 
+export function requireVoiceDurationMs(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > MAX_VOICE_DURATION_MS) {
+    throw new InputError(`录音时长必须是 1–${MAX_VOICE_DURATION_MS} 的整数毫秒`)
+  }
+  return value
+}
+
 export function userMessage(error: unknown, operation: string): string {
   if (error instanceof InputError) return error.message
   if (error instanceof AuthError) return error.message
   if (error instanceof UpstreamError) return error.message
   if (error instanceof InvalidResponseError) return error.message
+  if (error instanceof VoiceTranscriptionError) return error.message
   if (namedError(error, 'TimeoutError')) return `${operation}超时，请稍后重试`
   if (namedError(error, 'AbortError')) return '请求已取消'
   if (error instanceof TypeError) return '无法连接课程服务，请检查网络后重试'

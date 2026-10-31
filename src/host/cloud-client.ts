@@ -2,6 +2,7 @@ import type { AuthManager } from '../auth.js'
 import {
   InvalidResponseError,
   UpstreamError,
+  VoiceTranscriptionError,
   isSegmentId,
   normalizeTopK,
   optionalCourseId,
@@ -11,8 +12,10 @@ import {
   requireKnowledgePointId,
   requireQuery,
   requireSegmentId,
+  requireVoiceDurationMs,
   requireWatchedSec,
 } from '../errors.js'
+import { sanitizeVoiceText } from '../untrusted.js'
 import {
   MAX_ARTICLE_CHARS,
   MAX_CHAPTERS,
@@ -21,6 +24,8 @@ import {
   MAX_RELATED_POINTS,
   MAX_SEGMENT_TEXT,
   MAX_TITLE_LENGTH,
+  MAX_VOICE_DURATION_MS,
+  MAX_VOICE_TRANSCRIPT_CHARS,
   MAX_WATCHED_SEC,
   type CatalogChapter,
   type CatalogCourse,
@@ -33,7 +38,9 @@ import {
   type RelatedKnowledgePoint,
   type SearchResult,
   type Segment,
+  type VoiceTranscript,
 } from '../shared/contracts.js'
+import { decodeVoiceWav } from './voice-audio.js'
 
 function isRelatedKnowledgePoint(value: unknown): value is RelatedKnowledgePoint {
   if (typeof value !== 'object' || value === null) return false
@@ -353,6 +360,51 @@ export async function getKnowledgePoint(
     throw new InvalidResponseError('课程服务返回的知识点详情不合法')
   }
   return payload
+}
+
+function voiceErrorForStatus(status: number): VoiceTranscriptionError {
+  if (status === 400) return new VoiceTranscriptionError('录音数据无效，请重试')
+  if (status === 413) return new VoiceTranscriptionError('录音过长，请缩短后重试')
+  if (status === 422) return new VoiceTranscriptionError('没有听清，请再说一次')
+  if (status === 429) return new VoiceTranscriptionError('操作太频繁，请稍后再试')
+  if (status === 502 || status === 503) return new VoiceTranscriptionError('语音服务暂时不可用，请稍后重试')
+  return new VoiceTranscriptionError('语音转写失败，请稍后重试')
+}
+
+export async function transcribeVoice(
+  auth: AuthManager,
+  audioBase64: string,
+  durationMs: number,
+  signal: AbortSignal,
+  timeoutMs: number,
+): Promise<VoiceTranscript> {
+  const validatedDuration = requireVoiceDurationMs(durationMs)
+  decodeVoiceWav(audioBase64, validatedDuration)
+
+  const response = await auth.request('/v1/asr/transcribe', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ audio: audioBase64, format: 'wav', durationMs: validatedDuration }),
+  }, signal, timeoutMs)
+
+  if (!response.ok) throw voiceErrorForStatus(response.status)
+
+  const payload = await readJsonResponse(response, '语音转写服务')
+  if (typeof payload !== 'object' || payload === null) {
+    throw new InvalidResponseError('语音转写服务返回了非对象响应')
+  }
+  const candidate = payload as Record<string, unknown>
+  if (typeof candidate.text !== 'string'
+    || typeof candidate.durationMs !== 'number' || !Number.isInteger(candidate.durationMs)
+    || candidate.durationMs < 1 || candidate.durationMs > MAX_VOICE_DURATION_MS) {
+    throw new InvalidResponseError('语音转写服务返回的数据不合法')
+  }
+
+  const text = sanitizeVoiceText(candidate.text)
+  if (text.length === 0 || Array.from(text).length > MAX_VOICE_TRANSCRIPT_CHARS) {
+    throw new InvalidResponseError('语音转写服务返回的文本不合法')
+  }
+  return { text, durationMs: validatedDuration }
 }
 
 export async function reportProgress(

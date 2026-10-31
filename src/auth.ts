@@ -178,9 +178,14 @@ export class AuthManager {
   }
 
   /** 带授权的取数请求；401 时用 refresh token 轮换一次后重试。 */
-  async request(path: string, init: RequestInit, signal: AbortSignal): Promise<Response> {
+  async request(
+    path: string,
+    init: RequestInit,
+    signal: AbortSignal,
+    timeoutMs = this.config.timeoutMs,
+  ): Promise<Response> {
     const first = await this.accessToken()
-    const response = await this.send(path, init, first, signal)
+    const response = await this.send(path, init, first, signal, timeoutMs)
     if (response.status !== 401 && response.status !== 403) return response
 
     await response.body?.cancel()
@@ -193,7 +198,7 @@ export class AuthManager {
 
     await this.refresh(true)
     const second = await this.accessToken()
-    const retry = await this.send(path, init, second, signal)
+    const retry = await this.send(path, init, second, signal, timeoutMs)
     if (retry.status === 401 || retry.status === 403) {
       await retry.body?.cancel()
       throw new AuthError('授权已失效，请重新设备授权', 'AUTH_EXPIRED')
@@ -262,6 +267,7 @@ export class AuthManager {
     init: RequestInit,
     state: TokenState,
     signal: AbortSignal,
+    timeoutMs: number,
   ): Promise<Response> {
     const headers = new Headers(init.headers)
     headers.set('authorization', `Bearer ${state.token}`)
@@ -269,7 +275,7 @@ export class AuthManager {
     return await fetch(`${this.config.baseUrl}${path}`, {
       ...init,
       headers,
-      signal: AbortSignal.any([signal, AbortSignal.timeout(this.config.timeoutMs)]),
+      signal: AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]),
     })
   }
 

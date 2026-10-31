@@ -16,6 +16,7 @@ import type {
   ProgressResult,
   SearchResult,
   Segment,
+  VoiceTranscript,
 } from '../shared/contracts.js'
 import {
   createPlaybackSession,
@@ -25,6 +26,7 @@ import {
   listCourses,
   reportProgress as putProgress,
   searchKnowledge,
+  transcribeVoice,
 } from './cloud-client.js'
 import type { EventReporter } from './events.js'
 import { parseLearnerContextUpdate, type LearnerContextStore } from './learner-context.js'
@@ -42,6 +44,7 @@ export class TrendCoachService extends TypertRemoteService {
     logger: HostLogger,
     events: EventReporter,
     learnerContext: LearnerContextStore,
+    private readonly voiceTimeoutMs: number,
   ) {
     super(ctx, 'trendCoach')
     this.auth = auth
@@ -156,6 +159,20 @@ export class TrendCoachService extends TypertRemoteService {
       const id = requireSessionId(sessionId)
       return Promise.resolve(this.learnerContext.set(id, parseLearnerContextUpdate(update)))
     })
+  }
+
+  /** 音频与转写正文不落日志：invoke 只记录操作名与错误类型。 */
+  @Remote
+  async transcribeVoice(
+    audioBase64: string,
+    durationMs: number,
+    signal: AbortSignal,
+  ): Promise<VoiceTranscript> {
+    const startedAt = Date.now()
+    const result = await this.invoke('语音转写', () =>
+      transcribeVoice(this.auth, audioBase64, durationMs, signal, this.voiceTimeoutMs))
+    this.logger.debug('语音转写完成: %dms', Date.now() - startedAt)
+    return result
   }
 
   @Remote

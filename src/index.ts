@@ -24,7 +24,7 @@ export function apply(ctx: Context, config: Config): void {
   const tracker = new CourseSessionTracker()
 
   registerLearnerContext(ctx, learnerContext)
-  new TrendCoachService(ctx, auth, logger, events, learnerContext)
+  new TrendCoachService(ctx, auth, logger, events, learnerContext, resolved.voiceTimeoutMs)
   registerSearchTool(ctx, auth, events, tracker)
   registerFeedbackBridge(ctx, events, tracker)
 

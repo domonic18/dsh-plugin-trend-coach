@@ -28,6 +28,11 @@ export function sanitizeInlineUntrusted(value: string): string {
   return sanitizeUntrusted(value).replace(/[\t\n\r]+/g, ' ')
 }
 
+/** 语音转写是用户草稿，只需压平空白；不做边界 token 转义，避免误改正常文字。 */
+export function sanitizeVoiceText(value: string): string {
+  return stripControlChars(value).replace(/\s+/g, ' ').trim()
+}
+
 export function truncateCodePoints(value: string, max: number): string {
   if (max <= 0) return ''
   let result = ''

@@ -14,6 +14,7 @@ export interface Config {
   baseUrl: string
   apiTokenRef: Volatile<string>
   timeoutMs: number
+  voiceTimeoutMs: number
   logLevel: LogLevel
 }
 
@@ -40,6 +41,8 @@ export const Config = Schema.object({
   baseUrl: Schema.string().default(process.env.TREND_COACH_BASE_URL?.trim() || LOCAL_BASE_URL),
   apiTokenRef: Schema.string().role('credential-ref').default('TREND_COACH_API_TOKEN').volatile(),
   timeoutMs: Schema.number().default(10_000),
+  // 语音要大于云端 ASR_TIMEOUT_MS（默认 30s），让云端先返回可读错误。
+  voiceTimeoutMs: Schema.number().default(40_000),
   logLevel: Schema.string().default(logLevelOrDefault()),
 })
 
@@ -62,6 +65,9 @@ export function resolveConfig(input: Config): Config {
   }
   if (!Number.isFinite(input.timeoutMs) || input.timeoutMs <= 0) {
     throw new Error('trend-coach: timeoutMs 必须是正数')
+  }
+  if (!Number.isFinite(input.voiceTimeoutMs) || input.voiceTimeoutMs <= 0) {
+    throw new Error('trend-coach: voiceTimeoutMs 必须是正数')
   }
 
   const baseUrl = input.baseUrl.trim().replace(/\/+$/, '')
