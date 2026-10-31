@@ -1,6 +1,6 @@
-# 趋势交易伴学产品 · 产品需求文档（v1.2）
+# 趋势交易伴学产品 · 产品需求文档（v1.3）
 
-- 状态：v1.2，需求已对齐（D1–D10 全部收敛），已补充 dsh 0.2.1-rc.5 可行性验证与 tarball 安装验证结论，待评审签署
+- 状态：v1.3，需求已对齐（D1–D10 全部收敛），已补充 dsh 0.2.1-rc.5 可行性验证、tarball 安装验证与检索契约扩展，待评审签署
 - 日期：2026-10-31
 - 需求来源：飞书需求池 RQ-004（趋势交易学习插件 · 学员伴学 Agent）
 - 关联项目：ai-invest-assisstant（仅借鉴知识库方法论，不共享代码与数据）
@@ -181,7 +181,7 @@
 
 **本期范围（D4 已定：单师课堂）**
 
-1. AI 教师基于已发布课程文章开讲，支持暂停/追问/跳章。讲解词优先用操作系统本地语音合成（macOS `say` / Windows SAPI），零服务端成本。
+1. AI 教师基于已发布课程文章开讲，支持暂停/追问/跳章。讲解词使用浏览器 Web Speech API（调用操作系统本地语音），零服务端成本，不通过 shell 调用系统命令。
 2. 白板 + K 线图表标注：讲解趋势结构、形态、买卖点时在图上逐步标注（插件本地渲染）。
 3. 随堂测验：每个模块 3–5 题，题库在课程制作阶段一次性预生成，课堂内即时评分与讲解。
 4. 课堂内自由提问（复用 F1 知识库与引用能力）。
@@ -260,8 +260,9 @@
 
 - 端点：`POST /v1/kb/search`，HTTPS + 账号鉴权 + 按用户限流。
 - 请求：`query`、可选 `courseId` / `moduleId`、`topK`。
-- 响应：`segmentId, courseId, chapterId, knowledgePointId, title, startSec, endSec, text, score`。
-- 片段详情：`GET /v1/kb/segments/{segmentId}`，返回单片段元数据与起止秒，供客户端点击历史回答中的引用时定位；同样要求鉴权与限流。
+- 响应 `segments[]`：`segmentId, courseId, chapterId, knowledgePointId, title, startSec, endSec, text, score`，以及展示用 `courseTitle, chapterTitle, knowledgePointTitle`（可选，缺失时客户端回退显示 ID）。
+- 响应 `relatedKnowledgePoints[]`：`knowledgePointId, title`，用于「课程未覆盖」时给出最近知识点（F1.4）；只给标题，不得携带起止秒或片段正文，避免被误当引用。
+- 片段详情：`GET /v1/kb/segments/{segmentId}`，返回单片段元数据、展示标题与起止秒，供客户端点击历史回答中的引用时定位；同样要求鉴权与限流。
 - 查询 embedding 在云端计算（单次成本可忽略），全库正文不下发。
 
 **检索要求**
@@ -347,7 +348,7 @@
 | D6 | 课程内容权属 | 已获授权方授权；授权书须覆盖转写、改写文章、入库检索等二次加工 |
 | D7 | 商业化 | 本期免费内测，不做支付/订阅 |
 | D8 | 模型托管方式 | 学员 BYOK：推理走学员自己配置的模型，平台不提供兜底 Key |
-| D9 | 语音方案 | 云端 ASR + 操作系统本地 TTS |
+| D9 | 语音方案 | 云端 ASR + 操作系统本地 TTS（经浏览器 Web Speech API 调用，不执行系统命令） |
 | D10 | 客户端分发 | 分阶段：内测期图文引导 + `dsh plugin add`；公测前出一键安装包（dsh + 预装插件 + 课程入口） |
 
 ---
