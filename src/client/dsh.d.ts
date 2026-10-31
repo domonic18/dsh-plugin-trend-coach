@@ -3,6 +3,7 @@ import type {
   AuthStatus,
   DeviceAuthPoll,
   DeviceAuthStart,
+  EventsConsent,
   PlaybackSession,
   SearchResult,
   Segment,
@@ -34,6 +35,14 @@ export type RemoteDeviceAuthPollResult =
 
 export type RemoteSignOutResult =
   | { ok: true; value: { signedOut: true } }
+  | { ok: false; error: { code: string; message: string } }
+
+export type RemoteEventsConsentResult =
+  | { ok: true; value: EventsConsent }
+  | { ok: false; error: { code: string; message: string } }
+
+export type RemoteReportResult =
+  | { ok: true; value: { reported: true } }
   | { ok: false; error: { code: string; message: string } }
 
 interface SlotsService {
@@ -69,6 +78,10 @@ interface ClientRemoteService {
     authStatus(): Promise<RemoteAuthStatusResult>
     beginDeviceAuth(): Promise<RemoteDeviceAuthStartResult>
     pollDeviceAuth(): Promise<RemoteDeviceAuthPollResult>
+    eventConsent(): Promise<RemoteEventsConsentResult>
+    setEventConsent(consent: boolean): Promise<RemoteEventsConsentResult>
+    reportCitationClick(segmentId: string): Promise<RemoteReportResult>
+    reportPlayerStarted(startupMs: number, autoplayBlocked: boolean): Promise<RemoteReportResult>
     signOut(): Promise<RemoteSignOutResult>
   }
 }

@@ -15,7 +15,9 @@ import type {
   RemoteAuthStatusResult,
   RemoteDeviceAuthPollResult,
   RemoteDeviceAuthStartResult,
+  RemoteEventsConsentResult,
   RemotePlaybackResult,
+  RemoteReportResult,
   RemoteSearchResult,
   RemoteSegmentResult,
   RemoteSignOutResult,
@@ -85,6 +87,10 @@ const deviceAuthPollSchema = z.object({
 })
 
 const signOutSchema = z.object({ signedOut: z.literal(true) })
+
+const eventsConsentSchema = z.object({ consent: z.boolean() })
+
+const reportSchema = z.object({ reported: z.literal(true) })
 
 const codec = (typeSymbol: string, create: () => z.ZodType) => ({
   mode: 'strict' as const,
@@ -176,6 +182,73 @@ const spec: TypertRemoteSpec = {
         () => deviceAuthPollSchema,
       ),
     },
+    'trendCoach/eventConsent': {
+      service: 'trendCoach',
+      invocation: { kind: 'direct' },
+      parameters: [],
+      result: codec(
+        'dsh-plugin-trend-coach#trendCoach/eventConsent:result',
+        () => eventsConsentSchema,
+      ),
+    },
+    'trendCoach/setEventConsent': {
+      service: 'trendCoach',
+      invocation: { kind: 'direct' },
+      parameters: [
+        {
+          name: 'consent',
+          wire: 'consent',
+          source: 'json',
+          codec: codec('dsh-plugin-trend-coach#trendCoach/setEventConsent:consent', () => z.boolean()),
+          strictCodec: codec('dsh-plugin-trend-coach#trendCoach/setEventConsent:consent', () => z.boolean()),
+        },
+      ],
+      result: codec(
+        'dsh-plugin-trend-coach#trendCoach/setEventConsent:result',
+        () => eventsConsentSchema,
+      ),
+    },
+    'trendCoach/reportCitationClick': {
+      service: 'trendCoach',
+      invocation: { kind: 'direct' },
+      parameters: [
+        {
+          name: 'segmentId',
+          wire: 'segmentId',
+          source: 'json',
+          codec: codec('dsh-plugin-trend-coach#trendCoach/reportCitationClick:segmentId', () => z.string()),
+          strictCodec: codec('dsh-plugin-trend-coach#trendCoach/reportCitationClick:segmentId', () => z.string()),
+        },
+      ],
+      result: codec(
+        'dsh-plugin-trend-coach#trendCoach/reportCitationClick:result',
+        () => reportSchema,
+      ),
+    },
+    'trendCoach/reportPlayerStarted': {
+      service: 'trendCoach',
+      invocation: { kind: 'direct' },
+      parameters: [
+        {
+          name: 'startupMs',
+          wire: 'startupMs',
+          source: 'json',
+          codec: codec('dsh-plugin-trend-coach#trendCoach/reportPlayerStarted:startupMs', () => z.number()),
+          strictCodec: codec('dsh-plugin-trend-coach#trendCoach/reportPlayerStarted:startupMs', () => z.number()),
+        },
+        {
+          name: 'autoplayBlocked',
+          wire: 'autoplayBlocked',
+          source: 'json',
+          codec: codec('dsh-plugin-trend-coach#trendCoach/reportPlayerStarted:autoplayBlocked', () => z.boolean()),
+          strictCodec: codec('dsh-plugin-trend-coach#trendCoach/reportPlayerStarted:autoplayBlocked', () => z.boolean()),
+        },
+      ],
+      result: codec(
+        'dsh-plugin-trend-coach#trendCoach/reportPlayerStarted:result',
+        () => reportSchema,
+      ),
+    },
     'trendCoach/signOut': {
       service: 'trendCoach',
       invocation: { kind: 'direct' },
@@ -191,6 +264,10 @@ interface TrendCoachRemote {
   authStatus(): Promise<RemoteAuthStatusResult>
   beginDeviceAuth(): Promise<RemoteDeviceAuthStartResult>
   pollDeviceAuth(): Promise<RemoteDeviceAuthPollResult>
+  eventConsent(): Promise<RemoteEventsConsentResult>
+  setEventConsent(consent: boolean): Promise<RemoteEventsConsentResult>
+  reportCitationClick(segmentId: string): Promise<RemoteReportResult>
+  reportPlayerStarted(startupMs: number, autoplayBlocked: boolean): Promise<RemoteReportResult>
   signOut(): Promise<RemoteSignOutResult>
 }
 
@@ -222,11 +299,15 @@ interface PanelProps {
   authStatus: () => Promise<RemoteAuthStatusResult>
   beginDeviceAuth: () => Promise<RemoteDeviceAuthStartResult>
   pollDeviceAuth: () => Promise<RemoteDeviceAuthPollResult>
+  eventConsent: () => Promise<RemoteEventsConsentResult>
+  setEventConsent: (consent: boolean) => Promise<RemoteEventsConsentResult>
+  reportCitationClick: (segmentId: string) => Promise<RemoteReportResult>
   signOut: () => Promise<RemoteSignOutResult>
 }
 
 interface PlayerProps {
   useTabInfo?: TabInfoHook
+  reportPlayerStarted?: (startupMs: number, autoplayBlocked: boolean) => void
 }
 
 function displayTitle(title: string | undefined, id: string): string {
@@ -239,6 +320,9 @@ function Panel({
   authStatus,
   beginDeviceAuth,
   pollDeviceAuth,
+  eventConsent,
+  setEventConsent,
+  reportCitationClick,
   signOut,
 }: PanelProps): React.ReactElement {
   const [query, setQuery] = React.useState('趋势反转怎么判断')
@@ -250,6 +334,11 @@ function Panel({
   const [device, setDevice] = React.useState<DeviceAuthStart | undefined>(undefined)
   const [authBusy, setAuthBusy] = React.useState(false)
   const [authError, setAuthError] = React.useState<string | undefined>(undefined)
+
+  const [consent, setConsent] = React.useState<boolean | undefined>(undefined)
+  const [consentBusy, setConsentBusy] = React.useState(false)
+  const [consentError, setConsentError] = React.useState<string | undefined>(undefined)
+  const authorized = auth?.authorized === true
 
   const refreshAuth = React.useCallback(async () => {
     try {
@@ -267,6 +356,48 @@ function Panel({
   React.useEffect(() => {
     void refreshAuth()
   }, [refreshAuth])
+
+  React.useEffect(() => {
+    if (!authorized) {
+      setConsent(undefined)
+      setConsentError(undefined)
+      return
+    }
+    let cancelled = false
+    void (async () => {
+      try {
+        const result = await eventConsent()
+        if (cancelled) return
+        if (result.ok) {
+          setConsent(result.value.consent)
+        } else {
+          setConsent(undefined)
+          setConsentError(result.error.message)
+        }
+      } catch (consentFailure: unknown) {
+        if (cancelled) return
+        setConsent(undefined)
+        setConsentError(consentFailure instanceof Error ? consentFailure.message : '指标同意状态读取失败')
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [authorized, eventConsent])
+
+  const toggleConsent = async () => {
+    const next = consent !== true
+    setConsentBusy(true)
+    setConsentError(undefined)
+    try {
+      const result = await setEventConsent(next)
+      if (result.ok) setConsent(result.value.consent)
+      else setConsentError(result.error.message)
+    } catch (consentFailure: unknown) {
+      setConsentError(consentFailure instanceof Error ? consentFailure.message : '指标同意更新失败')
+    }
+    setConsentBusy(false)
+  }
 
   React.useEffect(() => {
     if (device === undefined) return
@@ -374,6 +505,7 @@ function Panel({
             type: 'button',
             onClick: () => {
               setError(undefined)
+              void reportCitationClick(segment.segmentId)
               void openSegment({
                 segmentId: segment.segmentId,
                 title: segment.title,
@@ -458,11 +590,34 @@ function Panel({
       : null,
   )
 
+  const consentBlock = authorized
+    ? React.createElement(
+      'div',
+      { style: { border: '1px solid #ddd', borderRadius: 4, padding: '6px 8px', marginBottom: 8 } },
+      React.createElement(
+        'label',
+        { style: { display: 'flex', gap: 6, alignItems: 'flex-start' } },
+        React.createElement('input', {
+          type: 'checkbox',
+          checked: consent === true,
+          disabled: consentBusy || consent === undefined,
+          onChange: () => void toggleConsent(),
+        }),
+        React.createElement('span', null,
+          '允许匿名上报使用指标（检索、引用、播放；不含问题与回答内容）'),
+      ),
+      consentError !== undefined
+        ? React.createElement('p', { style: { margin: '6px 0 0', color: '#c0392b' } }, consentError)
+        : null,
+    )
+    : null
+
   return React.createElement(
     'div',
     { style: { padding: 12, fontSize: 13, lineHeight: 1.5 } },
     React.createElement('h3', { style: { margin: '0 0 8px' } }, '趋势伴学'),
     authBlock,
+    consentBlock,
     React.createElement('div', { style: { display: 'flex', gap: 6 } },
       React.createElement('input', {
         value: query,
@@ -481,7 +636,7 @@ function isHlsSource(src: string): boolean {
   return /\.m3u8(?:$|\?)/i.test(src)
 }
 
-function Player({ useTabInfo }: PlayerProps): React.ReactElement {
+function Player({ useTabInfo, reportPlayerStarted }: PlayerProps): React.ReactElement {
   const info = useTabInfo === undefined ? undefined : useTabInfo()
   const navigation = info?.tab.navigation
   const params = (navigation?.params ?? {}) as PlayerParams
@@ -491,6 +646,9 @@ function Player({ useTabInfo }: PlayerProps): React.ReactElement {
   const src = params.src
 
   const videoRef = React.useRef<HTMLVideoElement | null>(null)
+  const startedAtRef = React.useRef(Date.now())
+  const reportedRef = React.useRef<string | undefined>(undefined)
+  const gestureRef = React.useRef(false)
   const [current, setCurrent] = React.useState(0)
   const [duration, setDuration] = React.useState(0)
   const [ready, setReady] = React.useState(false)
@@ -507,6 +665,9 @@ function Player({ useTabInfo }: PlayerProps): React.ReactElement {
     setNeedsGesture(false)
     setDuration(0)
     setMediaError(params.error)
+    startedAtRef.current = Date.now()
+    reportedRef.current = undefined
+    gestureRef.current = false
   }, [startSec, revision, src, params.error])
 
   React.useEffect(() => {
@@ -547,6 +708,7 @@ function Player({ useTabInfo }: PlayerProps): React.ReactElement {
       void video.play().then(() => {
         setNeedsGesture(false)
       }).catch(() => {
+        gestureRef.current = true
         setNeedsGesture(true)
       })
     }
@@ -568,6 +730,13 @@ function Player({ useTabInfo }: PlayerProps): React.ReactElement {
     setReady(true)
     const value = event.currentTarget.duration
     if (Number.isFinite(value) && value > 0) setDuration(value)
+  }
+
+  const onPlaying = () => {
+    const key = `${src ?? ''}#${revision}`
+    if (reportedRef.current === key) return
+    reportedRef.current = key
+    reportPlayerStarted?.(Math.max(0, Date.now() - startedAtRef.current), gestureRef.current)
   }
 
   const range = startSec !== undefined && endSec !== undefined
@@ -648,6 +817,7 @@ function Player({ useTabInfo }: PlayerProps): React.ReactElement {
         style: { width: '100%', background: '#000' },
         onLoadedMetadata: onMetadata,
         onDurationChange: onMetadata,
+        onPlaying,
         onTimeUpdate,
         onError: () => setMediaError('视频加载失败'),
       }),
@@ -659,7 +829,10 @@ function Player({ useTabInfo }: PlayerProps): React.ReactElement {
         type: 'button',
         onClick: () => {
           setPausedAtClip(false)
-          void videoRef.current?.play().then(() => setNeedsGesture(false)).catch(() => setNeedsGesture(true))
+          void videoRef.current?.play().then(() => setNeedsGesture(false)).catch(() => {
+            gestureRef.current = true
+            setNeedsGesture(true)
+          })
         },
       }, pausedAtClip ? '片段已播放完毕，继续播放' : '点击播放')
       : null,
@@ -716,6 +889,7 @@ export function apply(ctx: Context): void {
   }
 
   const openCitation = async (remote: TrendCoachRemote, segmentId: string): Promise<void> => {
+    void remote.reportCitationClick(segmentId)
     const result = await remote.getSegment(segmentId)
     if (!result.ok) {
       console.error('[trend-coach] getSegment failed', result.error)
@@ -747,9 +921,22 @@ export function apply(ctx: Context): void {
             authStatus: () => scoped.remote.trendCoach.authStatus(),
             beginDeviceAuth: () => scoped.remote.trendCoach.beginDeviceAuth(),
             pollDeviceAuth: () => scoped.remote.trendCoach.pollDeviceAuth(),
+            eventConsent: () => scoped.remote.trendCoach.eventConsent(),
+            setEventConsent: (consent: boolean) => scoped.remote.trendCoach.setEventConsent(consent),
+            reportCitationClick: (segmentId: string) => scoped.remote.trendCoach.reportCitationClick(segmentId),
             signOut: () => scoped.remote.trendCoach.signOut(),
           }),
         }, Panel))
+
+        scoped.slots.inject('sidebar.right.pane.tab', () => scoped.slots.register({
+          name: 'sidebar.right.pane.tab',
+          key: PLAYER_ID,
+          inject: () => ({
+            reportPlayerStarted: (startupMs: number, autoplayBlocked: boolean) => {
+              void scoped.remote.trendCoach.reportPlayerStarted(startupMs, autoplayBlocked)
+            },
+          }),
+        }, Player))
 
         scoped.effect(() => {
           const onClick = (event: MouseEvent) => {
@@ -811,10 +998,5 @@ export function apply(ctx: Context): void {
       description: () => '引用定位与播放',
     }],
   }), 'trend-coach player tab type')
-
-  ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
-    name: 'sidebar.right.pane.tab',
-    key: PLAYER_ID,
-  }, Player))
 
 }
