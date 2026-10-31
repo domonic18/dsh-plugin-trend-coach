@@ -1,10 +1,10 @@
-# 趋势伴学插件 · 架构设计（v1.1）
+# 趋势伴学插件 · 架构设计（v1.2）
 
-- 状态：v1.1，基于 PRD v1.3 与 dsh 0.2.1-rc.5 实测/源码调研结论；补齐需求覆盖矩阵与待决策清单
+- 状态：v1.2，基于 PRD v1.3 与 dsh 0.2.1-rc.5 实测/源码调研结论；补齐需求覆盖矩阵与待决策清单
 - 日期：2026-10-31
 - 上游文档：[产品需求文档](../requirements/product-requirements.md)
 - 配套规范：[项目规范](../conventions/project-conventions.md)
-- 版本变更：v1.1 补充播放语义、HLS 播放方案、鉴权分期、水印与水印边界、TTS 方案、指标采集边界、显示字段与相邻知识点契约、`engines.dsh` 强制校验，以及 §17 覆盖矩阵、§18 待决策清单。
+- 版本变更：v1.2 落地播放会话契约（`POST /v1/playback/sessions`）、媒体 CORS 要求、引用时间点只信 `getSegment`、hls.js 优先于 `canPlayType` 的选择顺序，并记录 S1 端到端验证结果；v1.1 补齐播放语义、HLS 方案、鉴权分期、水印、TTS、指标、显示字段/相邻知识点、`engines.dsh` 与 §17/§18。
 
 ---
 
@@ -128,10 +128,10 @@ apply(ctx)
 
 | 模块 | 职责 |
 |---|---|
-| `Panel` | 输入问题 → Remote 检索 → 渲染片段列表 → 点击打开播放器 |
-| `Player` | 读取 `useTabInfo()` 的 params/revision → `<video>` → `loadedmetadata` 后 seek |
-| `parseCitation` | 解析 `https://trend-coach.local/segment/:id?t&e`，拒绝其他 host |
-| capture handler | 优先处理引用链接，其次处理 `seg-xxx` 代码块；其余点击放行 |
+| `Panel` | 输入问题 → Remote 检索 → 渲染片段列表 → 点击打开播放器（先换播放会话） |
+| `Player` | 读取 `useTabInfo()` 的 params/revision → 签名源 → hls.js/原生 `<video>` → `loadedmetadata` 后 seek，播到片段上限自动暂停 |
+| `parseCitation` | 解析 `https://trend-coach.local/segment/:id?t&e`，只取 `segmentId`；拒绝其他 host |
+| capture handler | 优先处理引用链接，其次处理 `seg-xxx` 代码块；两条路径都经 `getSegment` 取权威起止秒 |
 
 **引用点击双路径**
 
@@ -145,7 +145,7 @@ apply(ctx)
 | 混合检索 | `POST /v1/kb/search` | 契约已定，mock 已验证 |
 | 片段元数据 | `GET /v1/kb/segments/{segmentId}` | 契约已定，mock 已验证 |
 | 账号 / 设备码 | 待定 | M3 设计 |
-| 视频签名 HLS | 待定 | D3，接云点播后落地 |
+| 视频签名 HLS | `POST /v1/playback/sessions` | 契约已定，mock + 浏览器已验（S1） |
 | 学习进度 | 待定 | M3 |
 
 ---
@@ -298,6 +298,32 @@ GET /v1/kb/segments/{segmentId}
 Authorization: Bearer <token>
 ```
 
+**播放会话**
+
+```http
+POST /v1/playback/sessions
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{ "segmentId": "seg-tc101-m3-kp3-1" }
+```
+
+响应：
+
+```jsonc
+{
+  "sessionId": "string",
+  "playlistUrl": "https://media.example.com/hls/index.m3u8?token=...",
+  "expiresAt": 1760000000000,
+  "watermark": { "label": "学员 1001" }
+}
+```
+
+- `playlistUrl` 是**短时效签名地址**，其 m3u8 内的 key URI 与分片地址同样携带同一 token；浏览器直接向媒体源取流，不需要也不得携带 Bearer（A15）。
+- `expiresAt` 必须覆盖一个片段的完整播放窗口（当前片段上限 60s）；mock 取 10 分钟，真实云端按云点播签名策略下发。播放中过期由 hls.js 报网络错误，播放器给出可读提示。
+- 媒体源必须返回 CORS 允许头（至少 `GET/OPTIONS`、`Range`、`Content-Type`），否则浏览器侧 hls.js 取流失败；文档与部署检查表须包含该条。
+- 响应同样是 JSON 对象；字段不合法则整体失败，不进入播放器。
+
 **错误语义**：`401/403` 未授权（提示重新登录）、`404` 片段不存在（提示内容已下架）、`429` 限流（退避提示）、`5xx` 服务不可用（可重试提示）。响应必须是 JSON 对象；`segments` 必须是数组；任一元素不合法则整体失败，不做静默丢弃。
 
 ### 6.4 播放器 tab 与引用 URL
@@ -308,20 +334,23 @@ Authorization: Bearer <token>
 |---|---|---|
 | `segmentId` | string | 否（无片段时展示空播放器） |
 | `title` | string | 否 |
-| `startSec` | number | 否 |
-| `endSec` | number | 否 |
-| `src` | string | 否（默认由配置/云端签名提供） |
+| `startSec` | number | 否（来自 `getSegment`，不信任 URL） |
+| `endSec` | number | 否（来自 `getSegment`，不信任 URL） |
+| `src` | string | 否（播放会话下发的签名 `playlistUrl`） |
+| `watermark` | string | 否（播放会话下发的展示标签） |
+| `error` | string | 否（会话换取失败时的可读提示） |
 
 同一 tab 重复打开通过 `navigation.revision` 触发重新定位。
 
 **播放源与解密**
 
-- dsh/Chromium 不内置 HLS 播放能力，加密 HLS 由插件内置的 hls.js 经 MSE 播放（A9）；普通 MP4 仍走原生 `<video>`，两条路径按 `src` 扩展名/MIME 选择。
-- `src` 必须为短时效签名地址，由云端在检索/片段接口中下发或由设备授权换取；客户端不持久化、不写日志。
-- 水印在播放画面上以客户端覆盖层实现（用户 ID + 时间戳，周期性位移），作为威慑与追溯线索；取证级水印另行评估（A11）。
+- 打开任何片段前先调 `createPlaybackSession`（Host 持 Bearer），浏览器只拿到签名 `playlistUrl`；不把 Bearer、也不把长期播放地址暴露给客户端。
+- dsh/Chromium 不内置 HLS 播放能力，加密 HLS 由插件内置的 hls.js 经 MSE 播放（A9）；普通 MP4 仍走原生 `<video>`。
+- **选择顺序**：`Hls.isSupported()` 为真时一律走 hls.js；只有 MSE 不可用且 `canPlayType('application/vnd.apple.mpegurl')` 非空时才交给原生播 HLS。不得用 `canPlayType` 作为“支持 HLS”的唯一依据——Chrome on macOS 会返回 `maybe` 但实际不能播。
+- 播放语义：seek 到 `startSec` 后尝试自动播放，被浏览器拦截时显示“点击播放”；播放到 `min(endSec, startSec + 60)` 自动暂停并提示继续；`revision` 变化重新定位。水印覆盖层随播放时间每 15s 换角，作为威慑与追溯线索；取证级水印另行评估（A11）。
 - 解密失败、签名过期、播放中断均落到播放器内可读提示，不静默黑屏。
 
-**引用 URL**：`https://trend-coach.local/segment/{encodeURIComponent(segmentId)}?t={startSec}&e={endSec}`。客户端只接受该 host 与 `/segment/` 前缀。
+**引用 URL**：`https://trend-coach.local/segment/{encodeURIComponent(segmentId)}?t={startSec}&e={endSec}`。客户端只接受该 host 与 `/segment/` 前缀，且 `t/e` 仅作兼容展示——实际定位以 `getSegment` 返回的权威起止秒为准，避免历史回答或模型改写时间点。
 
 ### 6.5 数据模型与不变量
 
@@ -347,12 +376,13 @@ Authorization: Bearer <token>
 | A6 | 学员 BYOK，插件不碰模型 Key | 成本与合规归属清晰 | 低能力模型影响体验 |
 | A7 | 单 npm 包同时含双半 | 安装一次、版本一致 | 构建需分别产出 Host/Client |
 | A8 | 预览期锁定 dsh 精确版本 | API 漂移风险高；`engines.dsh` 与 DSH peer 依赖由插件管理器强制校验，不满足会阻止安装/激活 | 升级需主动跟进并把 `engines.dsh` 收紧到实测区间 |
-| A9 | 内置 hls.js 播放加密 HLS | dsh 不提供 HLS 播放器，Chromium/Electron 无原生 HLS；MSE 是唯一可行路径 | 增加约 200KB 体积，需按需动态加载并自管错误恢复 |
+| A9 | 内置 hls.js 播放加密 HLS，优先走 MSE | dsh 不提供 HLS 播放器；Chrome on macOS 对 `canPlayType` 返回 `maybe` 却无法播放，不能据此跳过 hls.js | client bundle 约 588KB（min）；S1 已验明文/加密 HLS、seek、片尾暂停，后续再评估按需拆包 |
 | A10 | M2 用 credential-ref 引用内部 token，M3 切设备码换短时 token | 公测前必须有账号体系（D5），但内部试用不应被账号体系阻塞 | M2 凭据轮换依赖配置更新；M3 需重做 Host 鉴权与错误码 |
 | A11 | 水印先做客户端动态覆盖层，取证级水印后置 | 零云端改造即可上线，满足「提高抓取成本」的定位 | 覆盖层可被系统录屏绕过；M4 评估服务端取证水印 |
 | A12 | TTS 使用浏览器 Web Speech API（系统语音） | dsh 无 TTS 服务；Web Speech 不需 shell、不引入外网依赖，符合最小权限 | 音色与质量依赖操作系统；M5 需验证中文可用性并保留降级文案 |
 | A13 | 指标走云端鉴权事件，不接第三方分析 SDK | dsh 产品分析仅桌面端，且不把第三方标识作为分析维度 | 需云端埋点与同意管理；本地默认关闭、可撤回 |
 | A14 | 兼容性以 `engines.dsh` + 市场兼容性判据为准 | 插件管理器按 `engines.dsh`（否则 DSH peer 依赖）拦截安装与激活 | 版本范围必须收紧，发布前跑最低支持版本矩阵 |
+| A15 | 播放地址由 Host 换取签名会话，浏览器不持 Bearer | Bearer 留在 Host；签名 URL 只对一次播放有效，可按用户/设备/并发约束 | 多一个端点与会话 TTL；过期后需重新换会话 |
 
 ---
 
@@ -487,7 +517,7 @@ docs/                        # 需求、架构、规范
 | 需求 | 优先级 | 架构承接 | 状态 | 闭合前置 |
 |---|---|---|---|---|
 | F1 课程问答与视频溯源 | P0 | §4.1、§5.1、§5.2、§6.1–6.4 | 部分 | 真实云端检索 + 显示字段/相邻知识点契约 + 播放语义落地 |
-| F1.3 自动播放 30–60s、片段高亮、水印 | P0 | §5.2 播放语义、§6.4、A11 | 部分 | hls.js 集成、水印覆盖层、自动播放降级 |
+| F1.3 自动播放 30–60s、片段高亮、水印 | P0 | §5.2 播放语义、§6.4、A11 | 部分 | mock 已验证 hls.js/水印/自动播放降级/片尾暂停；剩片段高亮与真实云端签名联调 |
 | F1.4 未覆盖给最近知识点 | P0 | §6.1 `relatedKnowledgePoints` | 部分 | 云端返回相邻知识点（仅标题）并更新工具渲染 |
 | F2 知识体系化呈现 | P0 | §4.3（云端契约视角） | 待设计 | M3 体系页与后台接口章节 |
 | F3 学习场景即时提问（多模态） | P0 | §1 范围外，M4 补充 | 待设计 | 选中文本/页面上下文采集方式、ASR 接入 |
@@ -498,6 +528,8 @@ docs/                        # 需求、架构、规范
 | NFR 合规（风险提示、AI 合规、隐私） | P0 | §10、PRD §7 | 待设计 | UI 常驻免责声明、注销与同意流程 |
 | 指标（激活/引用点击/满意度等） | P0 | §12、A13 | 部分 | 云端事件接口 + 同意管理 |
 
+**S1 验证记录（2026-10-31，mock + dsh 0.2.1-rc.5 + Chrome）**：`POST /v1/playback/sessions` → 签名 m3u8 → key/分片（均带 token）→ hls.js 解密播放，起播定位到 `startSec`；`min(endSec, start+60)` 片尾暂停与“继续播放”提示生效；`<code>seg-xxx</code>` 与 `trend-coach.local` 链接两条引用路径都经 `getSegment` 取权威起止秒，URL 里的 `t/e` 被忽略。CORS、错误 403（token 无效/过期）已验证。
+
 **M2 前必须闭合**：F1 全链路契约（含显示字段与相邻知识点）、播放语义与 hls.js、credential-ref、错误码区分、日志脱敏。其余按里程碑排期。
 
 ---
@@ -506,7 +538,8 @@ docs/                        # 需求、架构、规范
 
 | 事项 | 当前结论 | 状态 | 决策位置 |
 |---|---|---|---|
-| HLS 播放方案 | 内置 hls.js，按需加载；MP4 走原生 | 已决 | A9 |
+| HLS 播放方案 | 内置 hls.js，MSE 优先；MSE 不可用才回退原生 HLS | 已决并完成 S1 验证 | A9 |
+| 播放会话换取 | Host `POST /v1/playback/sessions` 换签名 `playlistUrl`，浏览器不持 Bearer | 已决并完成 mock 验证 | A15、§6.3 |
 | 鉴权分期 | M2 credential-ref 内部 token；M3 设备码换短时 token | 已决（M3 流程待设计） | A10、§16.1 |
 | 水印实现 | M2 客户端动态覆盖层；取证级后置 | 已决（取证待评估） | A11、§16.6 |
 | TTS 方案 | 浏览器 Web Speech API | 已决（中文可用性待验证） | A12、§16.5 |

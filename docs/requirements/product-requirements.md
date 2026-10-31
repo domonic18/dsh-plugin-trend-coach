@@ -1,6 +1,6 @@
-# 趋势交易伴学产品 · 产品需求文档（v1.3）
+# 趋势交易伴学产品 · 产品需求文档（v1.4）
 
-- 状态：v1.3，需求已对齐（D1–D10 全部收敛），已补充 dsh 0.2.1-rc.5 可行性验证、tarball 安装验证与检索契约扩展，待评审签署
+- 状态：v1.4，需求已对齐（D1–D10 全部收敛），补充播放会话契约与签名媒体要求；已含 dsh 0.2.1-rc.5 可行性验证、tarball 安装验证与检索契约扩展，待评审签署
 - 日期：2026-10-31
 - 需求来源：飞书需求池 RQ-004（趋势交易学习插件 · 学员伴学 Agent）
 - 关联项目：ai-invest-assisstant（仅借鉴知识库方法论，不共享代码与数据）
@@ -103,8 +103,8 @@
 **引用交互实现决策**
 
 - 主路径：回答中的 `segmentId` 以代码块形式呈现，客户端捕获点击后调用 `getSegment(segmentId)` 获取起止秒，再打开右侧栏播放器 tab 并 seek。该路径不依赖模型额外输出链接，已实测可用。
-- 备选路径：工具结果附带 `https://trend-coach.local/segment/<segmentId>?t=&e=` 链接，客户端在 capture 阶段拦截。实测拦截可用，但模型不一定原样复述链接，因此不作为唯一方案。
-- 播放器为独立页面型 tab（`kind: trend-coach-player`），参数包含 `segmentId / title / startSec / endSec / src`；`src` 在真实环境接云点播签名 HLS，mock 阶段为本地测试视频。
+- 备选路径：工具结果附带 `https://trend-coach.local/segment/<segmentId>?t=&e=` 链接，客户端在 capture 阶段拦截。实测拦截可用，但模型不一定原样复述链接，因此不作为唯一方案。链接中的 `t/e` 仅兼容展示，起止秒一律以 `getSegment` 为准。
+- 播放器为独立页面型 tab（`kind: trend-coach-player`），参数包含 `segmentId / title / startSec / endSec / src / watermark / error`；`src` 由播放会话接口下发的短时效签名 HLS 地址提供，mock 阶段为本地加密样片。
 - 为支持历史回答中的 `segmentId` 随时点击，检索服务需提供按 `segmentId` 查询片段元数据的接口（见 §6）。
 
 ---
@@ -263,6 +263,7 @@
 - 响应 `segments[]`：`segmentId, courseId, chapterId, knowledgePointId, title, startSec, endSec, text, score`，以及展示用 `courseTitle, chapterTitle, knowledgePointTitle`（可选，缺失时客户端回退显示 ID）。
 - 响应 `relatedKnowledgePoints[]`：`knowledgePointId, title`，用于「课程未覆盖」时给出最近知识点（F1.4）；只给标题，不得携带起止秒或片段正文，避免被误当引用。
 - 片段详情：`GET /v1/kb/segments/{segmentId}`，返回单片段元数据、展示标题与起止秒，供客户端点击历史回答中的引用时定位；同样要求鉴权与限流。
+- 播放会话：`POST /v1/playback/sessions`，请求 `segmentId`，返回 `sessionId / playlistUrl / expiresAt / watermark.label`。`playlistUrl` 为短时效签名 HLS，m3u8 内 key 与分片同样携带 token；浏览器不持 Bearer。`expiresAt` 至少覆盖一个片段播放窗口（60s），媒体源必须支持 CORS 与按需 Range。
 - 查询 embedding 在云端计算（单次成本可忽略），全库正文不下发。
 
 **检索要求**

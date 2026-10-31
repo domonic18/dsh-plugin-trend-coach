@@ -1,6 +1,6 @@
-# 趋势伴学插件 · 项目规范（v1.1）
+# 趋势伴学插件 · 项目规范（v1.2）
 
-- 状态：v1.1，依据 dsh 0.2.1-rc.5 官方插件实现、M0 实测结论与插件管理器/市场源码调研
+- 状态：v1.2，依据 dsh 0.2.1-rc.5 官方插件实现、M0 实测结论与插件管理器/市场源码调研；补充播放会话、签名媒体与 HLS 选择顺序
 - 日期：2026-10-31
 - 适用范围：本仓库全部代码、配置、文档与提交
 - 关联文档：[架构设计](../architecture/architecture-design.md)、[产品需求](../requirements/product-requirements.md)
@@ -58,6 +58,7 @@ cordis.patch.yml      bundle patch（随包发布）
 - **必须**：不使用 `^0.0.1-rc.x` 之类旧范围——会解析到旧依赖链并把未发布包拖入安装，导致 404。
 - **应当**：升级 dsh 版本时同步更新 peer/dev 版本、构建产物与兼容矩阵，不单独升级某一个 dsh 包。
 - **必须**：加密 HLS 用内置 `hls.js`（MSE）播放并动态加载；dsh/Chromium 无原生 HLS，禁止依赖 CDN 脚本或额外播放服务。普通 MP4 仍用原生 `<video>`，按源类型选择路径。
+- **必须**：HLS 选择顺序为 `Hls.isSupported()` 优先，只有 MSE 不可用且 `canPlayType('application/vnd.apple.mpegurl')` 非空时才交给原生播放；Chrome on macOS 会对该类型返回 `maybe` 但无法播放，禁止单独用 `canPlayType` 判断。
 - **应当**：新增第三方运行时依赖（如 hls.js）须在 PR 说明用途、许可证与打包体积；纯浏览器/宿主已有能力（如 Web Speech API）不引依赖。
 
 ---
@@ -135,7 +136,9 @@ cordis.patch.yml      bundle patch（随包发布）
 - **应当**：请求可取消、带超时；重试仅用于幂等的 GET，且需退避。
 - **应当**：响应字段变更视为契约变更，先更新 PRD §6 与架构 §6，再改代码。
 - **必须**：鉴权分期固定——M2 用 dsh credential-ref 引用内部 token（`role("credential-ref").volatile()`），M3 切换设备码换短时 token；不得把 token 写进 profile 明文或客户端 bundle。
-- **必须**：播放地址为短时效签名，由云端下发或设备授权换取；客户端不缓存、不写日志、不拼长期地址。
+- **必须**：播放地址由 Host 调 `POST /v1/playback/sessions`（带 Bearer）换取，只把短时效签名 `playlistUrl` 交给浏览器；客户端不缓存、不写日志、不拼长期地址，也不得在浏览器侧携带 Bearer 请求媒体。
+- **必须**：签名 `playlistUrl` 内的 key URI 与分片同样带 token；媒体源返回 CORS 头并支持 Range。会话 `expiresAt` 至少覆盖一个片段播放窗口（60s）。
+- **必须**：引用定位只信 `getSegment` 的起止秒；URL/模型输出里的 `t/e` 一律忽略。
 - **必须**：指标上报只走云端鉴权事件接口，字段按白名单最小化（不含 query 原文、回答内容、播放地址），且需用户同意、可撤回；禁止接入第三方分析 SDK。
 - **应当**：空召回与相邻知识点分别建模：`segments` 为空时返回 `relatedKnowledgePoints`（仅标题），不与“服务故障”混用。
 
@@ -214,6 +217,9 @@ cordis.patch.yml      bundle patch（随包发布）
 - ❌ 使用 `latest` 或宽松 dsh 版本范围
 - ❌ 在无召回时编造课程内容或时间点
 - ❌ 依赖 CDN 脚本或第三方播放服务加载 HLS
+- ❌ 仅凭 `canPlayType` 判断 HLS 支持，或在 Chrome/macOS 上跳过 hls.js
+- ❌ 把 Bearer、长期播放地址或未经签名/未开 CORS 的媒体地址交给浏览器
+- ❌ 信任引用 URL 或模型输出中的起止秒（`t/e`），而不调 `getSegment`
 - ❌ 用 shell/系统命令实现 TTS 或其他本地能力
 - ❌ 接入第三方分析 SDK 或未经同意上报行为数据
 
