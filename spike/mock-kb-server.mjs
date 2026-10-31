@@ -7,6 +7,17 @@ const fixtures = JSON.parse(
   readFileSync(fileURLToPath(new URL('./fixtures.json', import.meta.url)), 'utf8'),
 )
 
+// 知识点 KP-3.2 故意不配标题，用于验证客户端缺失时回退显示 ID。
+const courseTitles = { 'TC-101': '趋势交易基础' }
+const chapterTitles = { M1: '第一章 趋势认知', M2: '第二章 结构识别', M3: '第三章 买卖时机' }
+const knowledgePointTitles = {
+  'KP-1.1': '趋势的定义与三种方向',
+  'KP-1.2': '趋势结构:推动段与调整段',
+  'KP-2.1': '均线的方向与排列',
+  'KP-2.2': '量价配合的基本观察',
+  'KP-3.1': '趋势反转的初步信号',
+}
+
 const port = Number(process.env.MOCK_KB_PORT ?? 3939)
 const origin = `http://127.0.0.1:${port}`
 const hlsDir = fileURLToPath(new URL('./media/hls/', import.meta.url))
@@ -34,6 +45,14 @@ function scoreSegment(segment, query) {
   return Math.min(0.99, Number((0.5 + hits * 0.1).toFixed(3)))
 }
 
+function displayTitles(segment) {
+  return {
+    courseTitle: courseTitles[segment.courseId],
+    chapterTitle: chapterTitles[segment.chapterId],
+    knowledgePointTitle: knowledgePointTitles[segment.knowledgePointId],
+  }
+}
+
 function search({ query, courseId, topK }) {
   return fixtures
     .filter(segment => courseId === undefined || segment.courseId === courseId)
@@ -47,6 +66,7 @@ function search({ query, courseId, topK }) {
       chapterId: segment.chapterId,
       knowledgePointId: segment.knowledgePointId,
       title: segment.title,
+      ...displayTitles(segment),
       startSec: segment.startSec,
       endSec: segment.endSec,
       text: segment.text,
@@ -415,7 +435,7 @@ const server = createServer(async (request, response) => {
       return
     }
     const { keywords: _keywords, ...publicSegment } = segment
-    json(response, 200, { ...publicSegment, score: 1 })
+    json(response, 200, { ...publicSegment, ...displayTitles(segment), score: 1 })
     return
   }
 
