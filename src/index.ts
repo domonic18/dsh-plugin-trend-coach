@@ -37,9 +37,15 @@ interface Segment {
   score: number
 }
 
+interface RelatedKnowledgePoint {
+  knowledgePointId: string
+  title: string
+}
+
 interface SearchResult {
   query: string
   segments: Segment[]
+  relatedKnowledgePoints: RelatedKnowledgePoint[]
 }
 
 interface PlaybackSession {
@@ -72,13 +78,33 @@ const outputSchema = {
         additionalProperties: false,
       },
     },
+    relatedKnowledgePoints: {
+      type: 'array',
+      required: true,
+      items: {
+        type: 'object',
+        properties: {
+          knowledgePointId: { type: 'string', required: true },
+          title: { type: 'string', required: true },
+        },
+        additionalProperties: false,
+      },
+    },
   },
   additionalProperties: false,
 } as const
 
 function renderResult(_args: unknown, value: SearchResult): Array<{ type: 'text'; text: string }> {
   if (value.segments.length === 0) {
-    return [{ type: 'text', text: '课程未覆盖该问题:知识库没有召回相关片段。' }]
+    if (value.relatedKnowledgePoints.length === 0) {
+      return [{ type: 'text', text: '课程未覆盖该问题:知识库没有召回相关片段。' }]
+    }
+    const lines = [
+      '课程未覆盖该问题:知识库没有召回相关片段。',
+      '以下是可能相关的知识点标题,只作学习方向提示,不包含视频时间点,不得当作引用:',
+      ...value.relatedKnowledgePoints.map((point) => `- ${point.title} (${point.knowledgePointId})`),
+    ]
+    return [{ type: 'text', text: lines.join('\n') }]
   }
 
   const lines = [`检索到 ${value.segments.length} 个课程片段:`, '']
@@ -98,6 +124,15 @@ function renderResult(_args: unknown, value: SearchResult): Array<{ type: 'text'
 
 function citationUrl(segment: Segment): string {
   return `https://trend-coach.local/segment/${encodeURIComponent(segment.segmentId)}?t=${segment.startSec}&e=${segment.endSec}`
+}
+
+function isRelatedKnowledgePoint(value: unknown): value is RelatedKnowledgePoint {
+  if (typeof value !== 'object' || value === null) return false
+  const candidate = value as Record<string, unknown>
+  return (
+    typeof candidate.knowledgePointId === 'string' &&
+    typeof candidate.title === 'string'
+  )
 }
 
 function isSegment(value: unknown): value is Segment {
@@ -152,7 +187,16 @@ async function searchKnowledge(
     throw new Error('知识库检索响应包含不合法的片段')
   }
 
-  return { query, segments }
+  const rawRelated = (payload as { relatedKnowledgePoints?: unknown }).relatedKnowledgePoints
+  let relatedKnowledgePoints: RelatedKnowledgePoint[] = []
+  if (rawRelated !== undefined) {
+    if (!Array.isArray(rawRelated) || !rawRelated.every(isRelatedKnowledgePoint)) {
+      throw new Error('知识库检索响应包含不合法的相关知识点')
+    }
+    relatedKnowledgePoints = rawRelated
+  }
+
+  return { query, segments, relatedKnowledgePoints }
 }
 
 async function getSegment(
@@ -271,7 +315,7 @@ export function apply(ctx: Context, config: Config): void {
       description:
         '检索趋势交易课程知识库。回答任何与趋势交易课程内容相关的问题前必须先调用此工具。'
         + '返回的每个片段带唯一 segmentId 与视频起止秒;回答只能引用返回的 segmentId,不得自行编造时间点。'
-        + '没有召回结果时,明确告诉学员课程未覆盖该问题。',
+        + '没有召回结果时,明确告诉学员课程未覆盖该问题;若返回 relatedKnowledgePoints,只能提示学习方向,不得当作引用或补造时间点。',
       parameters: {
         query: { type: 'string', required: true, description: '学员问题的检索语句' },
         courseId: { type: 'string', description: '可选:限定课程 ID' },

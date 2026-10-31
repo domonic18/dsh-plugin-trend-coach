@@ -49,6 +49,27 @@ function search({ query, courseId, topK }) {
     }))
 }
 
+function relatedKnowledgePoints(query) {
+  const points = new Map()
+  for (const segment of fixtures) {
+    const hits = segment.keywords.filter(keyword => query.includes(keyword)).length
+    const entry = points.get(segment.knowledgePointId)
+    if (entry === undefined) {
+      points.set(segment.knowledgePointId, {
+        knowledgePointId: segment.knowledgePointId,
+        title: segment.title,
+        hits,
+      })
+    } else {
+      entry.hits += hits
+    }
+  }
+  return [...points.values()]
+    .sort((a, b) => b.hits - a.hits)
+    .slice(0, 3)
+    .map(({ knowledgePointId, title }) => ({ knowledgePointId, title }))
+}
+
 function cors(response) {
   response.setHeader('access-control-allow-origin', '*')
   response.setHeader('access-control-allow-methods', 'GET, POST, OPTIONS')
@@ -419,9 +440,10 @@ const server = createServer(async (request, response) => {
 
   const topK = Number.isInteger(payload.topK) ? Math.min(Math.max(payload.topK, 1), 20) : 5
   const segments = search({ query, courseId: payload.courseId, topK })
+  const related = segments.length === 0 ? relatedKnowledgePoints(query) : []
 
-  console.log(`[mock-kb] query=${JSON.stringify(query)} hits=${segments.length}`)
-  json(response, 200, { segments })
+  console.log(`[mock-kb] query=${JSON.stringify(query)} hits=${segments.length} related=${related.length}`)
+  json(response, 200, { segments, relatedKnowledgePoints: related })
 })
 
 server.listen(port, '127.0.0.1', () => {

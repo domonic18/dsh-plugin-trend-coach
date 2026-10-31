@@ -12,9 +12,15 @@ export interface SearchSegment {
   score: number
 }
 
+export interface RelatedKnowledgePoint {
+  knowledgePointId: string
+  title: string
+}
+
 export interface SearchPayload {
   query: string
   segments: SearchSegment[]
+  relatedKnowledgePoints: RelatedKnowledgePoint[]
 }
 
 export type RemoteSearchResult =

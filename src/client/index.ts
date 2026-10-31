@@ -49,9 +49,15 @@ const playbackSessionSchema = z.object({
   watermark: z.object({ label: z.string() }).optional(),
 })
 
+const relatedKnowledgePointSchema = z.object({
+  knowledgePointId: z.string(),
+  title: z.string(),
+})
+
 const resultSchema = z.object({
   query: z.string(),
   segments: z.array(segmentSchema),
+  relatedKnowledgePoints: z.array(relatedKnowledgePointSchema),
 })
 
 const authStatusSchema = z.object({
@@ -334,38 +340,52 @@ function Panel({
   const body: React.ReactNode[] = []
   if (error !== undefined) body.push(React.createElement('p', { key: 'error', style: { color: '#c0392b' } }, error))
   if (payload !== undefined) {
-    body.push(
-      React.createElement('p', { key: 'count' }, `命中 ${payload.segments.length} 个片段`),
-      ...payload.segments.map((segment: SearchSegment) =>
-        React.createElement('button', {
-          key: segment.segmentId,
-          type: 'button',
-          onClick: () => {
-            setError(undefined)
-            void openSegment({
-              segmentId: segment.segmentId,
-              title: segment.title,
-              startSec: segment.startSec,
-              endSec: segment.endSec,
-            }).catch((openError: unknown) => {
-              console.error('[trend-coach] open segment failed', openError)
-              setError('打开播放器失败，请稍后重试')
-            })
-          },
-          style: {
-            display: 'block',
-            width: '100%',
-            textAlign: 'left',
-            border: 0,
-            borderTop: '1px solid #ddd',
-            background: 'transparent',
-            padding: '6px 0',
-            cursor: 'pointer',
-            font: 'inherit',
-          },
-        }, formatSegment(segment)),
-      ),
-    )
+    if (payload.segments.length === 0) {
+      body.push(React.createElement('p', { key: 'empty' }, '课程未覆盖该问题。'))
+      if (payload.relatedKnowledgePoints.length > 0) {
+        body.push(
+          React.createElement('p', { key: 'related-title', style: { margin: '4px 0', color: '#666' } }, '相关知识点（仅标题）：'),
+          React.createElement('ul', { key: 'related', style: { margin: '0 0 8px', paddingLeft: 18 } },
+            ...payload.relatedKnowledgePoints.map((point) =>
+              React.createElement('li', { key: point.knowledgePointId }, `${point.title} · ${point.knowledgePointId}`),
+            ),
+          ),
+        )
+      }
+    } else {
+      body.push(
+        React.createElement('p', { key: 'count' }, `命中 ${payload.segments.length} 个片段`),
+        ...payload.segments.map((segment: SearchSegment) =>
+          React.createElement('button', {
+            key: segment.segmentId,
+            type: 'button',
+            onClick: () => {
+              setError(undefined)
+              void openSegment({
+                segmentId: segment.segmentId,
+                title: segment.title,
+                startSec: segment.startSec,
+                endSec: segment.endSec,
+              }).catch((openError: unknown) => {
+                console.error('[trend-coach] open segment failed', openError)
+                setError('打开播放器失败，请稍后重试')
+              })
+            },
+            style: {
+              display: 'block',
+              width: '100%',
+              textAlign: 'left',
+              border: 0,
+              borderTop: '1px solid #ddd',
+              background: 'transparent',
+              padding: '6px 0',
+              cursor: 'pointer',
+              font: 'inherit',
+            },
+          }, formatSegment(segment)),
+        ),
+      )
+    }
   }
 
   const authLine = auth === undefined
@@ -449,6 +469,7 @@ function Player({ useTabInfo }: PlayerProps): React.ReactElement {
 
   const videoRef = React.useRef<HTMLVideoElement | null>(null)
   const [current, setCurrent] = React.useState(0)
+  const [duration, setDuration] = React.useState(0)
   const [ready, setReady] = React.useState(false)
   const [needsGesture, setNeedsGesture] = React.useState(false)
   const [pausedAtClip, setPausedAtClip] = React.useState(false)
@@ -461,6 +482,7 @@ function Player({ useTabInfo }: PlayerProps): React.ReactElement {
   React.useEffect(() => {
     setPausedAtClip(false)
     setNeedsGesture(false)
+    setDuration(0)
     setMediaError(params.error)
   }, [startSec, revision, src, params.error])
 
@@ -519,6 +541,12 @@ function Player({ useTabInfo }: PlayerProps): React.ReactElement {
     }
   }
 
+  const onMetadata = (event: React.SyntheticEvent<HTMLVideoElement>) => {
+    setReady(true)
+    const value = event.currentTarget.duration
+    if (Number.isFinite(value) && value > 0) setDuration(value)
+  }
+
   const range = startSec !== undefined && endSec !== undefined
     ? `片段 ${startSec}s – ${endSec}s`
     : startSec !== undefined ? `定位 ${startSec}s` : '未指定片段'
@@ -534,6 +562,42 @@ function Player({ useTabInfo }: PlayerProps): React.ReactElement {
 
   const watermark = params.watermark ?? 'trend-coach'
   const corner = Math.floor(current / 15) % 4
+  const clampPercent = (value: number) => Math.min(100, Math.max(0, (value / duration) * 100))
+  const highlight = startSec !== undefined && endSec !== undefined && duration > 0
+    ? React.createElement(React.Fragment, null,
+      React.createElement('div', {
+        style: {
+          position: 'relative',
+          height: 8,
+          background: '#e0e0e0',
+          borderRadius: 4,
+          overflow: 'hidden',
+        },
+      },
+      React.createElement('div', {
+        style: {
+          position: 'absolute',
+          top: 0,
+          bottom: 0,
+          left: `${clampPercent(startSec)}%`,
+          width: `${Math.max(0, clampPercent(endSec) - clampPercent(startSec))}%`,
+          background: '#f0b429',
+        },
+      }),
+      React.createElement('div', {
+        style: {
+          position: 'absolute',
+          top: -1,
+          bottom: -1,
+          width: 2,
+          left: `${clampPercent(current)}%`,
+          background: '#c0392b',
+        },
+      })),
+      React.createElement('p', { style: { margin: 0, color: '#666' } },
+        `高亮区间 ${startSec}s – ${endSec}s，当前 ${current.toFixed(1)}s`),
+    )
+    : null
   const watermarkStyle: React.CSSProperties = {
     position: 'absolute',
     color: 'rgba(255, 255, 255, 0.55)',
@@ -558,12 +622,14 @@ function Player({ useTabInfo }: PlayerProps): React.ReactElement {
         controls: true,
         preload: 'metadata',
         style: { width: '100%', background: '#000' },
-        onLoadedMetadata: () => setReady(true),
+        onLoadedMetadata: onMetadata,
+        onDurationChange: onMetadata,
         onTimeUpdate,
         onError: () => setMediaError('视频加载失败'),
       }),
       React.createElement('div', { style: watermarkStyle }, `${watermark} · ${Math.floor(current)}s`),
     ),
+    highlight,
     needsGesture || pausedAtClip
       ? React.createElement('button', {
         type: 'button',
