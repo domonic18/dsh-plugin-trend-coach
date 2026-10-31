@@ -23,6 +23,11 @@ const userCodes = new Map()
 const accessTokens = new Map()
 const refreshTokens = new Map()
 
+/** 日志只保留可关联前缀，避免 userCode / deviceId 完整落盘。 */
+function mask(value) {
+  return typeof value === 'string' && value.length > 4 ? `${value.slice(0, 2)}***` : '***'
+}
+
 function scoreSegment(segment, query) {
   const hits = segment.keywords.filter(keyword => query.includes(keyword)).length
   if (hits === 0) return 0
@@ -257,7 +262,7 @@ const server = createServer(async (request, response) => {
       approved: false,
     })
     userCodes.set(userCode, deviceCode)
-    console.log(`[mock-kb] device code issued userCode=${userCode} device=${payload.deviceId}`)
+    console.log(`[mock-kb] device code issued userCode=${mask(userCode)} device=${mask(payload.deviceId)}`)
     json(response, 200, {
       deviceCode,
       userCode,
@@ -278,7 +283,7 @@ const server = createServer(async (request, response) => {
       return
     }
     entry.approved = true
-    console.log(`[mock-kb] device code approved userCode=${userCode}`)
+    console.log(`[mock-kb] device code approved userCode=${mask(userCode)}`)
     json(response, 200, { approved: true })
     return
   }
@@ -304,7 +309,7 @@ const server = createServer(async (request, response) => {
     deviceCodes.delete(deviceCode)
     userCodes.delete(entry.userCode)
     const grant = issueGrant(entry.deviceId)
-    console.log(`[mock-kb] device authorized userCode=${entry.userCode} device=${entry.deviceId}`)
+    console.log(`[mock-kb] device authorized userCode=${mask(entry.userCode)} device=${mask(entry.deviceId)}`)
     json(response, 200, { status: 'authorized', grant })
     return
   }
@@ -327,7 +332,7 @@ const server = createServer(async (request, response) => {
       if (meta.deviceId === entry.deviceId) accessTokens.delete(token)
     }
     const grant = issueGrant(entry.deviceId)
-    console.log(`[mock-kb] token refreshed device=${entry.deviceId}`)
+    console.log(`[mock-kb] token refreshed device=${mask(entry.deviceId)}`)
     json(response, 200, grant)
     return
   }
@@ -437,12 +442,16 @@ const server = createServer(async (request, response) => {
     json(response, 400, { error: 'query is required' })
     return
   }
+  if (query.trim().length > 500) {
+    json(response, 400, { error: 'query too long' })
+    return
+  }
 
   const topK = Number.isInteger(payload.topK) ? Math.min(Math.max(payload.topK, 1), 20) : 5
   const segments = search({ query, courseId: payload.courseId, topK })
   const related = segments.length === 0 ? relatedKnowledgePoints(query) : []
 
-  console.log(`[mock-kb] query=${JSON.stringify(query)} hits=${segments.length} related=${related.length}`)
+  console.log(`[mock-kb] queryLength=${query.trim().length} hits=${segments.length} related=${related.length}`)
   json(response, 200, { segments, relatedKnowledgePoints: related })
 })
 
