@@ -1,10 +1,20 @@
 import { remoteErrorOf, RemoteError } from '@deepseek-ai/dsh-typert-protocol'
+import {
+  MAX_LEARNER_SELECTED_CHARS,
+  MAX_LEARNER_SELECTED_RAW,
+  MAX_TITLE_LENGTH,
+  MAX_WATCHED_SEC,
+} from './shared/contracts.js'
+import { sanitizeInlineUntrusted, sanitizeUntrusted, truncateCodePoints } from './untrusted.js'
+
+export { MAX_WATCHED_SEC }
 
 export const MAX_QUERY_LENGTH = 500
 export const MAX_COURSE_ID_LENGTH = 64
 export const MAX_SEGMENT_ID_LENGTH = 80
 export const MAX_KNOWLEDGE_POINT_ID_LENGTH = 64
-export const MAX_WATCHED_SEC = 86400
+export const MAX_CHAPTER_ID_LENGTH = 64
+export const MAX_SESSION_ID_LENGTH = 128
 export const DEFAULT_TOP_K = 5
 export const MAX_TOP_K = 20
 export const MAX_RESPONSE_BYTES = 512 * 1024
@@ -12,6 +22,8 @@ export const MAX_RESPONSE_BYTES = 512 * 1024
 const COURSE_ID_PATTERN = /^[A-Za-z0-9._-]+$/
 const SEGMENT_ID_PATTERN = /^seg-[A-Za-z0-9._-]+$/
 const KNOWLEDGE_POINT_ID_PATTERN = /^[A-Za-z0-9._-]+$/
+const CHAPTER_ID_PATTERN = /^[A-Za-z0-9._-]+$/
+const SESSION_ID_PATTERN = /^[A-Za-z0-9._:-]+$/
 
 export class InputError extends Error {
   constructor(message: string) {
@@ -154,6 +166,71 @@ export function requireWatchedSec(value: unknown): number {
 export function requireCompleted(value: unknown): boolean {
   if (typeof value !== 'boolean') throw new InputError('完成状态必须是布尔值')
   return value
+}
+
+export function requireSessionId(value: unknown): string {
+  if (typeof value !== 'string' || value.length === 0
+    || value.length > MAX_SESSION_ID_LENGTH || !SESSION_ID_PATTERN.test(value)) {
+    throw new InputError('会话 ID 格式不合法')
+  }
+  return value
+}
+
+export function requireRevision(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new InputError('revision 必须是非负安全整数')
+  }
+  return value
+}
+
+export function requireEnabled(value: unknown): boolean {
+  if (typeof value !== 'boolean') throw new InputError('上下文开关必须是布尔值')
+  return value
+}
+
+export function optionalChapterId(value: unknown): string | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'string') throw new InputError('章节 ID 必须是字符串')
+  const chapterId = value.trim()
+  if (chapterId.length === 0 || chapterId.length > MAX_CHAPTER_ID_LENGTH || !CHAPTER_ID_PATTERN.test(chapterId)) {
+    throw new InputError('章节 ID 格式不合法')
+  }
+  return chapterId
+}
+
+export function optionalKnowledgePointId(value: unknown): string | undefined {
+  if (value === undefined) return undefined
+  return requireKnowledgePointId(value)
+}
+
+export function optionalContextTitle(value: unknown): string | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'string') throw new InputError('标题必须是字符串')
+  const title = sanitizeInlineUntrusted(value).replace(/\s+/g, ' ').trim()
+  if (title.length === 0) return undefined
+  if (title.length > MAX_TITLE_LENGTH) throw new InputError(`标题不能超过 ${MAX_TITLE_LENGTH} 个字符`)
+  return title
+}
+
+export function optionalPositionSec(value: unknown): number | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0 || value > MAX_WATCHED_SEC) {
+    throw new InputError(`播放位置必须是 0–${MAX_WATCHED_SEC} 的整数秒`)
+  }
+  return value
+}
+
+export function optionalSelectedText(value: unknown): { text: string | undefined; truncated: boolean } {
+  if (value === undefined) return { text: undefined, truncated: false }
+  if (typeof value !== 'string') throw new InputError('选中文本必须是字符串')
+  if (value.length > MAX_LEARNER_SELECTED_RAW) {
+    throw new InputError(`选中文本不能超过 ${MAX_LEARNER_SELECTED_RAW} 个字符`)
+  }
+  const sanitized = sanitizeUntrusted(value)
+  const text = truncateCodePoints(sanitized, MAX_LEARNER_SELECTED_CHARS)
+  const truncated = Array.from(sanitized).length > MAX_LEARNER_SELECTED_CHARS
+  if (text.trim().length === 0) return { text: undefined, truncated: false }
+  return { text, truncated }
 }
 
 export function userMessage(error: unknown, operation: string): string {

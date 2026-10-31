@@ -1,7 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import type { AuthManager } from '../auth.js'
-import { normalizeTopK, toRemoteError } from '../errors.js'
+import { normalizeTopK, requireSessionId, toRemoteError } from '../errors.js'
 import type {
   AuthStatus,
   CatalogCourse,
@@ -10,6 +10,8 @@ import type {
   DeviceAuthStart,
   EventsConsent,
   KnowledgePointDetail,
+  LearnerContextAck,
+  LearnerContextUpdate,
   PlaybackSession,
   ProgressResult,
   SearchResult,
@@ -25,18 +27,27 @@ import {
   searchKnowledge,
 } from './cloud-client.js'
 import type { EventReporter } from './events.js'
+import { parseLearnerContextUpdate, type LearnerContextStore } from './learner-context.js'
 import type { HostLogger } from './log.js'
 
 export class TrendCoachService extends TypertRemoteService {
   private readonly auth: AuthManager
   private readonly logger: HostLogger
   private readonly events: EventReporter
+  private readonly learnerContext: LearnerContextStore
 
-  constructor(ctx: Context, auth: AuthManager, logger: HostLogger, events: EventReporter) {
+  constructor(
+    ctx: Context,
+    auth: AuthManager,
+    logger: HostLogger,
+    events: EventReporter,
+    learnerContext: LearnerContextStore,
+  ) {
     super(ctx, 'trendCoach')
     this.auth = auth
     this.logger = logger
     this.events = events
+    this.learnerContext = learnerContext
   }
 
   /** 失败只记录操作名与错误类型，不记录 token、设备 ID 或 query 原文。 */
@@ -138,10 +149,20 @@ export class TrendCoachService extends TypertRemoteService {
     return { reported: true }
   }
 
+  /** 纯本机内存：失败日志只记操作名与错误类型，不记录 sessionId、标题或选中文本。 */
+  @Remote
+  async setLearnerContext(sessionId: string, update: LearnerContextUpdate): Promise<LearnerContextAck> {
+    return await this.invoke('学习上下文更新', () => {
+      const id = requireSessionId(sessionId)
+      return Promise.resolve(this.learnerContext.set(id, parseLearnerContextUpdate(update)))
+    })
+  }
+
   @Remote
   async signOut(): Promise<{ signedOut: true }> {
     await this.invoke('退出登录', () => this.auth.signOut())
     this.events.resetConsent()
+    this.learnerContext.clear()
     return { signedOut: true }
   }
 }

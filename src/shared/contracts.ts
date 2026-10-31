@@ -105,6 +105,25 @@ export interface ProgressResult {
   updatedAt: number
 }
 
+export interface LearnerContextUpdate {
+  revision: number
+  enabled: boolean
+  courseId?: string
+  courseTitle?: string
+  chapterId?: string
+  chapterTitle?: string
+  knowledgePointId?: string
+  knowledgePointTitle?: string
+  positionSec?: number
+  selectedText?: string
+}
+
+export interface LearnerContextAck {
+  revision: number
+  applied: boolean
+  truncated: boolean
+}
+
 export const MAX_SEGMENT_TEXT = 4000
 export const MAX_RELATED_POINTS = 5
 export const MAX_TITLE_LENGTH = 200
@@ -113,3 +132,10 @@ export const MAX_CHAPTERS = 50
 export const MAX_KNOWLEDGE_POINTS = 1000
 export const MAX_ARTICLE_CHARS = 20000
 export const MAX_WATCHED_SEC = 86400
+
+export const MAX_LEARNER_SELECTED_RAW = 4000
+export const MAX_LEARNER_SELECTED_CHARS = 500
+export const MAX_LEARNER_SESSIONS = 64
+export const LEARNER_CONTEXT_TTL_MS = 30 * 60 * 1000
+export const LEARNER_POSITION_BUCKET_SEC = 15
+export const LEARNER_CONTEXT_SECTION_ORDER = 8500
