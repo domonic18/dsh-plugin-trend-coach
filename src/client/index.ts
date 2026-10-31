@@ -314,6 +314,18 @@ function displayTitle(title: string | undefined, id: string): string {
   return title === undefined || title.length === 0 ? id : title
 }
 
+interface PanelCache {
+  query: string
+  payload?: SearchResult
+  error?: string
+  auth?: AuthStatus
+  device?: DeviceAuthStart
+  consent?: boolean
+}
+
+// 切换右栏 tab 会重建面板；跨挂载保留检索结果与授权状态，避免输入和结果丢失。
+const panelCache: PanelCache = { query: '趋势反转怎么判断' }
+
 function Panel({
   search,
   openSegment,
@@ -325,20 +337,29 @@ function Panel({
   reportCitationClick,
   signOut,
 }: PanelProps): React.ReactElement {
-  const [query, setQuery] = React.useState('趋势反转怎么判断')
+  const [query, setQuery] = React.useState(() => panelCache.query)
   const [busy, setBusy] = React.useState(false)
-  const [payload, setPayload] = React.useState<SearchResult | undefined>(undefined)
-  const [error, setError] = React.useState<string | undefined>(undefined)
+  const [payload, setPayload] = React.useState<SearchResult | undefined>(() => panelCache.payload)
+  const [error, setError] = React.useState<string | undefined>(() => panelCache.error)
 
-  const [auth, setAuth] = React.useState<AuthStatus | undefined>(undefined)
-  const [device, setDevice] = React.useState<DeviceAuthStart | undefined>(undefined)
+  const [auth, setAuth] = React.useState<AuthStatus | undefined>(() => panelCache.auth)
+  const [device, setDevice] = React.useState<DeviceAuthStart | undefined>(() => panelCache.device)
   const [authBusy, setAuthBusy] = React.useState(false)
   const [authError, setAuthError] = React.useState<string | undefined>(undefined)
 
-  const [consent, setConsent] = React.useState<boolean | undefined>(undefined)
+  const [consent, setConsent] = React.useState<boolean | undefined>(() => panelCache.consent)
   const [consentBusy, setConsentBusy] = React.useState(false)
   const [consentError, setConsentError] = React.useState<string | undefined>(undefined)
   const authorized = auth?.authorized === true
+
+  React.useEffect(() => {
+    panelCache.query = query
+    panelCache.payload = payload
+    panelCache.error = error
+    panelCache.auth = auth
+    panelCache.device = device
+    panelCache.consent = consent
+  }, [query, payload, error, auth, device, consent])
 
   const refreshAuth = React.useCallback(async () => {
     try {
@@ -582,7 +603,7 @@ function Panel({
           type: 'button',
           disabled: authBusy,
           onClick: () => void logout(),
-        }, '退出登录')
+        }, '退出并注销')
         : null,
     ),
     authError !== undefined
