@@ -13,6 +13,7 @@ import type {
   ProgressResult,
   SearchResult,
   Segment,
+  VoiceTranscript,
 } from '../shared/contracts.js'
 
 export type RemoteSearchResult =
@@ -71,6 +72,10 @@ export type RemoteLearnerContextResult =
   | { ok: true; value: LearnerContextAck }
   | { ok: false; error: { code: string; message: string } }
 
+export type RemoteVoiceTranscriptResult =
+  | { ok: true; value: VoiceTranscript }
+  | { ok: false; error: { code: string; message: string } }
+
 interface SlotsService {
   inject(key: string, callback: () => void | (() => void)): void
   register(options: Record<string, unknown>, component: unknown): () => void
@@ -113,6 +118,7 @@ interface ClientRemoteService {
     knowledgePoint(knowledgePointId: string): Promise<RemoteKnowledgePointResult>
     reportProgress(knowledgePointId: string, watchedSec: number, completed: boolean): Promise<RemoteProgressResult>
     setLearnerContext(sessionId: string, update: LearnerContextUpdate): Promise<RemoteLearnerContextResult>
+    transcribeVoice(audioBase64: string, durationMs: number): Promise<RemoteVoiceTranscriptResult>
     signOut(): Promise<RemoteSignOutResult>
   }
 }

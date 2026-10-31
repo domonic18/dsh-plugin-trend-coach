@@ -20,6 +20,8 @@ import { CatalogPanel } from './catalog.js'
 import { LearnerContextBridge } from './context-bridge.js'
 import { learnerContextStore } from './learner-context.js'
 import { installSelectionDetector } from './selection.js'
+import type { ComposerInputActions } from './voice/controller.js'
+import { VoiceButton } from './voice/voice-button.js'
 import type {
   RemoteAuthStatusResult,
   RemoteCatalogCourseResult,
@@ -35,6 +37,7 @@ import type {
   RemoteSearchResult,
   RemoteSegmentResult,
   RemoteSignOutResult,
+  RemoteVoiceTranscriptResult,
 } from './dsh.js'
 
 export const name = 'trend-coach-client'
@@ -178,6 +181,11 @@ const learnerContextAckSchema = z.object({
   revision: z.number(),
   applied: z.boolean(),
   truncated: z.boolean(),
+})
+
+const voiceTranscriptSchema = z.object({
+  text: z.string(),
+  durationMs: z.number(),
 })
 
 const codec = (typeSymbol: string, create: () => z.ZodType) => ({
@@ -340,6 +348,31 @@ const spec: TypertRemoteSpec = {
         () => learnerContextAckSchema,
       ),
     },
+    'trendCoach/transcribeVoice': {
+      service: 'trendCoach',
+      invocation: { kind: 'direct' },
+      parameters: [
+        {
+          name: 'audioBase64',
+          wire: 'audioBase64',
+          source: 'json',
+          codec: codec('dsh-plugin-trend-coach#trendCoach/transcribeVoice:audioBase64', () => z.string()),
+          strictCodec: codec('dsh-plugin-trend-coach#trendCoach/transcribeVoice:audioBase64', () => z.string()),
+        },
+        {
+          name: 'durationMs',
+          wire: 'durationMs',
+          source: 'json',
+          codec: codec('dsh-plugin-trend-coach#trendCoach/transcribeVoice:durationMs', () => z.number()),
+          strictCodec: codec('dsh-plugin-trend-coach#trendCoach/transcribeVoice:durationMs', () => z.number()),
+        },
+      ],
+      cancellation: { parameter: 'signal' },
+      result: codec(
+        'dsh-plugin-trend-coach#trendCoach/transcribeVoice:result',
+        () => voiceTranscriptSchema,
+      ),
+    },
     'trendCoach/authStatus': {
       service: 'trendCoach',
       invocation: { kind: 'direct' },
@@ -454,6 +487,7 @@ interface TrendCoachRemote {
     completed: boolean,
   ): Promise<RemoteProgressResult>
   setLearnerContext(sessionId: string, update: LearnerContextUpdate): Promise<RemoteLearnerContextResult>
+  transcribeVoice(audioBase64: string, durationMs: number): Promise<RemoteVoiceTranscriptResult>
   authStatus(): Promise<RemoteAuthStatusResult>
   beginDeviceAuth(): Promise<RemoteDeviceAuthStartResult>
   pollDeviceAuth(): Promise<RemoteDeviceAuthPollResult>
@@ -1351,6 +1385,16 @@ export function apply(ctx: Context): void {
             sessionId: props.sessionId,
             remote: scoped.remote.trendCoach,
           }),
+        ))
+
+        scoped.slots.inject('conversation.input.right', () => scoped.slots.register(
+          { name: 'conversation.input.right', id: 'trend-coach-voice', order: 100, label: '语音输入' },
+          (props: { sessionId: string; inputActions?: ComposerInputActions }) =>
+            React.createElement(VoiceButton, {
+              ownerId: props.sessionId,
+              inputActions: props.inputActions,
+              remote: scoped.remote.trendCoach,
+            }),
         ))
       })
     }).catch((error: unknown) => {

@@ -1,3 +1,4 @@
+import { focusComposer } from './composer-focus.js'
 import { learnerContextStore } from './learner-context.js'
 
 const EDITABLE_SELECTOR = [
@@ -13,13 +14,6 @@ const BUTTON_ATTR = 'data-trend-coach-selection'
 function elementOf(node: Node | null): Element | undefined {
   if (node === null) return undefined
   return node instanceof Element ? node : node.parentElement ?? undefined
-}
-
-function isVisible(element: HTMLElement): boolean {
-  const rect = element.getBoundingClientRect()
-  const style = element.ownerDocument.defaultView?.getComputedStyle(element)
-  return rect.width > 0 && rect.height > 0
-    && style?.display !== 'none' && style?.visibility !== 'hidden'
 }
 
 /** 选中文本只在启用上下文时提供悬浮入口；监听与按钮都随插件卸载清理。 */
@@ -100,19 +94,6 @@ export function installSelectionDetector(): () => void {
     }, 0)
   }
 
-  const focusComposer = (): void => {
-    const candidates = Array.from(doc.querySelectorAll<HTMLElement>('[data-composer-input]'))
-      .filter(isVisible)
-    const target = lastComposer !== undefined && candidates.includes(lastComposer)
-      ? lastComposer
-      : candidates.length === 1 ? candidates[0] : undefined
-    try {
-      target?.focus()
-    } catch {
-      // 聚焦失败不阻断上下文携带，用户可手动点击输入框。
-    }
-  }
-
   const onButtonPointerDown = (event: PointerEvent): void => {
     event.preventDefault()
     event.stopPropagation()
@@ -123,7 +104,7 @@ export function installSelectionDetector(): () => void {
     }
     learnerContextStore.setSelectedText(current.selection.toString())
     hide()
-    focusComposer()
+    focusComposer(lastComposer)
   }
 
   const onFocusIn = (event: FocusEvent): void => {
