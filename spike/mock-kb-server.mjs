@@ -18,6 +18,71 @@ const knowledgePointTitles = {
   'KP-3.1': '趋势反转的初步信号',
 }
 
+const articleMarkdown = {
+  'KP-1.1': `# 趋势的定义与三种方向
+
+趋势不是单根 K 线的涨跌，而是**高低点的相对关系**。
+
+- 上升趋势：更高的高点与更高的低点
+- 下降趋势：更低的高点与更低的低点
+- 横盘：高低点大致处于同一区间
+
+> 判断方向先看高低点排列，再看均线与量能。
+
+对应视频片段：\`seg-tc101-m1-kp1-1\``,
+  'KP-1.2': `# 趋势结构：推动段与调整段
+
+一段完整的趋势由**推动段**和**调整段**交替构成。
+
+1. 推动段顺主趋势方向运行，力度强、延续性好
+2. 调整段逆主趋势方向回撤，通常幅度较浅、时间较短
+
+识别结构的关键是区分当前走势属于推动还是调整，避免把调整误判为反转。
+
+对应视频片段：\`seg-tc101-m1-kp1-2\``,
+  'KP-2.1': `# 均线的方向与排列
+
+观察均线重点看两点：
+
+- 均线自身的斜率方向
+- 多条均线的排列关系
+
+短期均线在上、长期均线在下且同时向上，通常对应较强的上升趋势。
+
+对应视频片段：\`seg-tc101-m2-kp2-1\``,
+  'KP-2.2': `# 量价配合的基本观察
+
+成交量反映参与程度，**不能单独作为买卖依据**。
+
+- 推动段放量、调整段缩量：趋势运行健康
+- 推动段缩量或调整段异常放量：需要提高警惕
+
+对应视频片段：\`seg-tc101-m2-kp2-2\``,
+  'KP-3.1': `# 趋势反转的初步信号
+
+反转不是单一信号，而是一组证据的累积：
+
+1. 原有高低点结构被破坏
+2. 推动段力度明显减弱
+3. 关键均线方向走平或转向
+
+单个信号只能作为提醒，必须结合更大级别的结构位置综合判断。
+
+对应视频片段：\`seg-tc101-m3-kp3-1\``,
+  'KP-3.2': `# 止损与风险边界
+
+止损位置应基于**结构**而不是主观容忍度。
+
+常见做法是把止损放在使当前交易逻辑失效的结构之外，例如推动段的起点或最近一个有效低点。
+
+课程只讨论风险边界的方法，不构成任何投资建议。
+
+对应视频片段：\`seg-tc101-m3-kp3-2\``,
+}
+
+const ARTICLE_PUBLISHED_AT = Date.parse('2026-10-01T00:00:00.000Z')
+const progress = new Map()
+
 const port = Number(process.env.MOCK_KB_PORT ?? 3939)
 const origin = `http://127.0.0.1:${port}`
 const hlsDir = fileURLToPath(new URL('./media/hls/', import.meta.url))
@@ -95,6 +160,91 @@ function relatedKnowledgePoints(query) {
     .sort((a, b) => b.hits - a.hits)
     .slice(0, 3)
     .map(({ knowledgePointId, title }) => ({ knowledgePointId, title }))
+}
+
+function knowledgePointTitle(knowledgePointId) {
+  return knowledgePointTitles[knowledgePointId] ?? knowledgePointId
+}
+
+function courseSegments(courseId) {
+  return fixtures.filter(segment => segment.courseId === courseId)
+}
+
+function progressKey(deviceId, knowledgePointId) {
+  return `${deviceId}:${knowledgePointId}`
+}
+
+function courseSummary(courseId, deviceId) {
+  const segments = courseSegments(courseId)
+  const chapters = new Set(segments.map(segment => segment.chapterId))
+  const points = new Set(segments.map(segment => segment.knowledgePointId))
+  let completedCount = 0
+  for (const knowledgePointId of points) {
+    if (progress.get(progressKey(deviceId, knowledgePointId))?.completed === true) completedCount += 1
+  }
+  return {
+    courseId,
+    title: courseTitles[courseId] ?? courseId,
+    chapterCount: chapters.size,
+    knowledgePointCount: points.size,
+    completedCount,
+  }
+}
+
+function courseTree(courseId, deviceId) {
+  const chapters = []
+  for (const segment of courseSegments(courseId)) {
+    let chapter = chapters.find(item => item.chapterId === segment.chapterId)
+    if (chapter === undefined) {
+      chapter = {
+        chapterId: segment.chapterId,
+        title: chapterTitles[segment.chapterId] ?? segment.chapterId,
+        position: chapters.length,
+        knowledgePoints: [],
+      }
+      chapters.push(chapter)
+    }
+    if (chapter.knowledgePoints.some(item => item.knowledgePointId === segment.knowledgePointId)) continue
+    const record = progress.get(progressKey(deviceId, segment.knowledgePointId))
+    chapter.knowledgePoints.push({
+      knowledgePointId: segment.knowledgePointId,
+      title: knowledgePointTitle(segment.knowledgePointId),
+      position: chapter.knowledgePoints.length,
+      segmentId: segment.segmentId,
+      watchedSec: record?.watchedSec ?? 0,
+      completed: record?.completed ?? false,
+    })
+  }
+  return {
+    courseId,
+    title: courseTitles[courseId] ?? courseId,
+    chapters,
+  }
+}
+
+function knowledgePointDetail(knowledgePointId) {
+  const segment = fixtures.find(item => item.knowledgePointId === knowledgePointId)
+  if (segment === undefined) return undefined
+  const points = []
+  for (const item of courseSegments(segment.courseId)) {
+    if (!points.includes(item.knowledgePointId)) points.push(item.knowledgePointId)
+  }
+  const index = points.indexOf(knowledgePointId)
+  const adjacent = [points[index - 1], points[index + 1]]
+    .filter((value) => value !== undefined)
+    .map((value) => ({ knowledgePointId: value, title: knowledgePointTitle(value) }))
+  const markdown = articleMarkdown[knowledgePointId]
+  return {
+    knowledgePointId,
+    courseId: segment.courseId,
+    chapterId: segment.chapterId,
+    title: knowledgePointTitle(knowledgePointId),
+    article: markdown === undefined
+      ? null
+      : { markdown, version: 1, publishedAt: ARTICLE_PUBLISHED_AT },
+    segmentId: segment.segmentId,
+    adjacentKnowledgePoints: adjacent,
+  }
 }
 
 function cors(response) {
@@ -517,6 +667,70 @@ const server = createServer(async (request, response) => {
     const session = issueSession(auth.deviceId)
     console.log(`[mock-kb] playback session ${session.sessionId} segment=${segmentId}`)
     json(response, 200, session)
+    return
+  }
+
+  if (request.method === 'GET' && url.pathname === '/v1/catalog/courses') {
+    const auth = requireAuth(request, response)
+    if (auth === undefined) return
+    const courseIds = [...new Set(fixtures.map(segment => segment.courseId))]
+    json(response, 200, {
+      courses: courseIds.map(courseId => courseSummary(courseId, auth.deviceId)),
+    })
+    return
+  }
+
+  if (request.method === 'GET' && url.pathname.startsWith('/v1/catalog/courses/')) {
+    const auth = requireAuth(request, response)
+    if (auth === undefined) return
+    const courseId = decodeURIComponent(url.pathname.slice('/v1/catalog/courses/'.length))
+    if (courseSegments(courseId).length === 0) {
+      json(response, 404, { error: 'course not found' })
+      return
+    }
+    json(response, 200, courseTree(courseId, auth.deviceId))
+    return
+  }
+
+  if (request.method === 'GET' && url.pathname.startsWith('/v1/catalog/knowledge-points/')) {
+    if (requireAuth(request, response) === undefined) return
+    const knowledgePointId = decodeURIComponent(
+      url.pathname.slice('/v1/catalog/knowledge-points/'.length),
+    )
+    const detail = knowledgePointDetail(knowledgePointId)
+    if (detail === undefined) {
+      json(response, 404, { error: 'knowledge point not found' })
+      return
+    }
+    json(response, 200, detail)
+    return
+  }
+
+  if (request.method === 'PUT' && url.pathname.startsWith('/v1/progress/knowledge-points/')) {
+    const auth = requireAuth(request, response)
+    if (auth === undefined) return
+    const knowledgePointId = decodeURIComponent(
+      url.pathname.slice('/v1/progress/knowledge-points/'.length),
+    )
+    if (!fixtures.some(segment => segment.knowledgePointId === knowledgePointId)) {
+      json(response, 404, { error: 'knowledge point not found' })
+      return
+    }
+    const payload = await readJson(request)
+    if (!isInt(payload?.watchedSec, 0, 86400) || typeof payload?.completed !== 'boolean') {
+      json(response, 400, { error: 'watchedSec must be an integer 0-86400 and completed a boolean' })
+      return
+    }
+    const key = progressKey(auth.deviceId, knowledgePointId)
+    const previous = progress.get(key)
+    const next = {
+      watchedSec: Math.max(previous?.watchedSec ?? 0, payload.watchedSec),
+      completed: (previous?.completed ?? false) || payload.completed,
+      updatedAt: Date.now(),
+    }
+    progress.set(key, next)
+    console.log(`[mock-kb] progress ${knowledgePointId} watched=${next.watchedSec} completed=${next.completed}`)
+    json(response, 200, { knowledgePointId, ...next })
     return
   }
 

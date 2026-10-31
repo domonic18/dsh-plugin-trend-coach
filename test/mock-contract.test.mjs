@@ -193,6 +193,138 @@ test('mock 云端接口满足对接清单', async (t) => {
     assert.equal(missing.status, 404)
   })
 
+  await t.test('体系接口返回课程树与知识点文章', async () => {
+    const unauthorized = await api('/v1/catalog/courses')
+    assert.equal(unauthorized.status, 401)
+
+    const list = await api('/v1/catalog/courses', { token: grant.accessToken })
+    assert.equal(list.status, 200)
+    assert.equal(list.json.courses.length, 1)
+    assert.deepEqual(list.json.courses[0], {
+      courseId: 'TC-101',
+      title: '趋势交易基础',
+      chapterCount: 3,
+      knowledgePointCount: 6,
+      completedCount: 0,
+    })
+
+    const tree = await api('/v1/catalog/courses/TC-101', { token: grant.accessToken })
+    assert.equal(tree.status, 200)
+    assert.equal(tree.json.title, '趋势交易基础')
+    assert.equal(tree.json.chapters.length, 3)
+    const points = tree.json.chapters.flatMap(chapter => chapter.knowledgePoints)
+    assert.equal(points.length, 6)
+    const first = points.find(item => item.knowledgePointId === 'KP-1.1')
+    assert.deepEqual(Object.keys(first).sort(), [
+      'completed', 'knowledgePointId', 'position', 'segmentId', 'title', 'watchedSec',
+    ])
+    assert.equal('startSec' in first, false)
+    assert.equal('endSec' in first, false)
+    assert.equal(first.segmentId, 'seg-tc101-m1-kp1-1')
+
+    const missingCourse = await api('/v1/catalog/courses/TC-404', { token: grant.accessToken })
+    assert.equal(missingCourse.status, 404)
+
+    const detail = await api('/v1/catalog/knowledge-points/KP-1.1', { token: grant.accessToken })
+    assert.equal(detail.status, 200)
+    assert.equal(detail.json.courseId, 'TC-101')
+    assert.equal(detail.json.chapterId, 'M1')
+    assert.equal(typeof detail.json.article.markdown, 'string')
+    assert.equal(detail.json.article.version, 1)
+    assert.equal(detail.json.article.publishedAt > 0, true)
+    assert.deepEqual(detail.json.adjacentKnowledgePoints, [
+      { knowledgePointId: 'KP-1.2', title: '趋势结构:推动段与调整段' },
+    ])
+
+    const missingPoint = await api('/v1/catalog/knowledge-points/KP-404', {
+      token: grant.accessToken,
+    })
+    assert.equal(missingPoint.status, 404)
+  })
+
+  await t.test('进度合并取最大时长且完成状态不可回退', async () => {
+    const first = await api('/v1/progress/knowledge-points/KP-1.1', {
+      method: 'PUT',
+      body: { watchedSec: 120, completed: false },
+      token: grant.accessToken,
+    })
+    assert.equal(first.status, 200)
+    assert.equal(first.json.watchedSec, 120)
+    assert.equal(first.json.completed, false)
+
+    const second = await api('/v1/progress/knowledge-points/KP-1.1', {
+      method: 'PUT',
+      body: { watchedSec: 60, completed: true },
+      token: grant.accessToken,
+    })
+    assert.equal(second.json.watchedSec, 120)
+    assert.equal(second.json.completed, true)
+
+    const third = await api('/v1/progress/knowledge-points/KP-1.1', {
+      method: 'PUT',
+      body: { watchedSec: 30, completed: false },
+      token: grant.accessToken,
+    })
+    assert.equal(third.json.watchedSec, 120)
+    assert.equal(third.json.completed, true)
+    assert.equal(third.json.updatedAt >= second.json.updatedAt, true)
+
+    const tree = await api('/v1/catalog/courses/TC-101', { token: grant.accessToken })
+    const point = tree.json.chapters
+      .flatMap(chapter => chapter.knowledgePoints)
+      .find(item => item.knowledgePointId === 'KP-1.1')
+    assert.equal(point.watchedSec, 120)
+    assert.equal(point.completed, true)
+
+    const list = await api('/v1/catalog/courses', { token: grant.accessToken })
+    assert.equal(list.json.courses[0].completedCount, 1)
+
+    const start = await api('/v1/auth/device/code', {
+      method: 'POST',
+      body: { clientId: 'dsh-plugin-trend-coach', deviceId: OTHER_DEVICE_ID },
+    })
+    await api('/v1/auth/device/approve', {
+      method: 'POST',
+      body: { userCode: start.json.userCode },
+    })
+    const otherAuth = await api('/v1/auth/device/token', {
+      method: 'POST',
+      body: { deviceCode: start.json.deviceCode },
+    })
+    const otherToken = otherAuth.json.grant.accessToken
+    const otherTree = await api('/v1/catalog/courses/TC-101', {
+      token: otherToken,
+      deviceId: OTHER_DEVICE_ID,
+    })
+    const otherPoint = otherTree.json.chapters
+      .flatMap(chapter => chapter.knowledgePoints)
+      .find(item => item.knowledgePointId === 'KP-1.1')
+    assert.equal(otherPoint.watchedSec, 0)
+    assert.equal(otherPoint.completed, false)
+
+    const invalidBodies = [
+      { watchedSec: -1, completed: false },
+      { watchedSec: 86_401, completed: false },
+      { watchedSec: 1.5, completed: false },
+      { watchedSec: 10, completed: 'yes' },
+    ]
+    for (const body of invalidBodies) {
+      const invalid = await api('/v1/progress/knowledge-points/KP-1.1', {
+        method: 'PUT',
+        body,
+        token: grant.accessToken,
+      })
+      assert.equal(invalid.status, 400, JSON.stringify(body))
+    }
+
+    const missing = await api('/v1/progress/knowledge-points/KP-404', {
+      method: 'PUT',
+      body: { watchedSec: 10, completed: false },
+      token: grant.accessToken,
+    })
+    assert.equal(missing.status, 404)
+  })
+
   await t.test('播放会话、签名 HLS 与 Range', async () => {
     const created = await api('/v1/playback/sessions', {
       method: 'POST',
