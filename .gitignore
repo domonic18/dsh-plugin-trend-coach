@@ -1,0 +1,6 @@
+node_modules/
+lib/
+*.tgz
+.playwright-mcp/
+spike/*.log
+.DS_Store
