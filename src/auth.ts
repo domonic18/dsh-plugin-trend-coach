@@ -38,6 +38,7 @@ class HttpError extends Error {
 
 const CLIENT_ID = 'dsh-plugin-trend-coach'
 const GRANT_KEY = credentialKey('trend-coach', 'device')
+const NO_SIGNAL = new AbortController().signal
 // 提前刷新，避免请求途中令牌过期。
 const REFRESH_MARGIN_MS = 30_000
 
@@ -164,6 +165,15 @@ export class AuthManager {
 
   async signOut(): Promise<void> {
     this.pending = undefined
+    const grant = await this.readGrant()
+    if (grant !== undefined) {
+      try {
+        const response = await this.request('/v1/auth/revoke', { method: 'POST' }, NO_SIGNAL)
+        await response.body?.cancel()
+      } catch {
+        // 服务端吊销尽力而为；本地登出不因网络失败而中断。
+      }
+    }
     await this.credentials.deleteRecord(GRANT_KEY)
   }
 
