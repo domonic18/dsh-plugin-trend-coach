@@ -30,12 +30,14 @@ test('发布包只含运行时产物', () => {
     'lib/index.d.ts',
     'lib/client.js',
     'lib/client/index.d.ts',
+    'README.md',
+    'LICENSE',
   ]) {
     assert.equal(files.includes(required), true, `缺少 ${required}`)
   }
 
   for (const file of files) {
-    assert.equal(/^(?!lib\/|package\.json$|cordis\.patch\.yml$)/.test(file), false, `不应发布 ${file}`)
+    assert.equal(/^(?!lib\/|package\.json$|cordis\.patch\.yml$|README\.md$|LICENSE$)/.test(file), false, `不应发布 ${file}`)
   }
 
   assert.equal(files.some((file) => /\.(env|pem|key|p12|tgz)$/i.test(file)), false)
