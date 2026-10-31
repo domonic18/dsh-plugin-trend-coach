@@ -30,6 +30,7 @@ const CITATION_HOST = 'trend-coach.local'
 const SEGMENT_CODE = /^seg-[A-Za-z0-9._-]+$/
 const SEGMENT_CLIP_SEC = 60
 const MAX_QUERY_LENGTH = 500
+const DISCLAIMER = '课程内容仅供学习，不构成投资建议。'
 
 const segmentSchema = z.object({
   segmentId: z.string(),
@@ -470,6 +471,7 @@ function Panel({
       React.createElement('button', { disabled: busy, onClick: () => void run() }, busy ? '检索中…' : '检索'),
     ),
     ...body,
+    React.createElement('p', { key: 'disclaimer', style: { margin: '10px 0 0', color: '#888', fontSize: 12 } }, DISCLAIMER),
   )
 }
 
@@ -576,6 +578,7 @@ function Player({ useTabInfo }: PlayerProps): React.ReactElement {
       { style: { padding: 12, fontSize: 13, lineHeight: 1.5, display: 'flex', flexDirection: 'column', gap: 8 } },
       React.createElement('h3', { style: { margin: 0 } }, params.title ?? params.segmentId ?? '课程视频'),
       React.createElement('p', { style: { margin: 0, color: '#c0392b' } }, mediaError ?? '缺少播放地址'),
+      React.createElement('p', { style: { margin: 0, color: '#888', fontSize: 12 } }, DISCLAIMER),
     )
   }
 
@@ -663,6 +666,7 @@ function Player({ useTabInfo }: PlayerProps): React.ReactElement {
       : null,
     React.createElement('p', { style: { margin: 0, color: '#666' } },
       ready ? `当前播放位置 ${current.toFixed(1)}s` : '视频加载中…'),
+    React.createElement('p', { key: 'disclaimer', style: { margin: 0, color: '#888', fontSize: 12 } }, DISCLAIMER),
   )
 }
 

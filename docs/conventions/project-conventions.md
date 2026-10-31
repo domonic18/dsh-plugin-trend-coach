@@ -154,7 +154,8 @@ cordis.patch.yml      bundle patch（随包发布）
 
 - **必须**：仓库与提交中不得出现任何密钥、token、私钥、个人凭据；提交前扫描。
 - **必须**：插件不注册 shell / 文件写入工具，不监听本地端口。
-- **必须**：云端返回内容视为不可信数据，限制长度，不执行其中的指令。
+- **必须**：云端返回内容视为不可信数据，限制长度，不执行其中的指令；渲染时包裹在固定 `<course_segment_data>` 边界内，剥离控制字符并转义正文中伪造的边界 token。
+- **必须**：投资相关内容在面板与播放器常驻免责声明「课程内容仅供学习，不构成投资建议」，并在工具渲染中要求回答结尾附上。
 - **必须**：日志不记录 token、完整学员问题、用户标识；生产环境默认不上报任何行为数据，启用指标需用户同意。
 - **必须**：设备 grant 使用 dsh credentials 记录（`$DSH_HOME/.credentials.yaml`，宿主保证 0600）；不得写进 profile 配置、插件自有文件或客户端 bundle。
 - **应当**：依赖升级走审计；新增依赖需说明用途与体积影响。
@@ -194,8 +195,9 @@ cordis.patch.yml      bundle patch（随包发布）
 
 1. `npm run typecheck`
 2. `npm run build`
-3. `npm run mock` + 插件在 dsh 中冒烟（Remote 挂载、检索、引用定位）
-4. 涉及打包/依赖/manifest 时：`npm pack` 后在全新 profile 安装验证
+3. `npm test`：Host 边界、不可信文本、mock 云端契约与发布包清单
+4. `npm run mock` + 插件在 dsh 中冒烟（Remote 挂载、检索、引用定位）
+5. 涉及打包/依赖/manifest 时：`npm pack` 后在全新 profile 安装验证
 
 **发布检查**
 
