@@ -90,6 +90,9 @@
 | 引用点击 → 播放定位 | 点击回答中的 `seg-xxx` 代码块 → 查询片段 → 播放器 seek 到 920s；`https://trend-coach.local/...` 链接拦截路径 seek 到 1870s |
 | 真实视频 seek | 服务端支持 HTTP Range 时，1 小时视频定位秒开（`readyState=4`），满足 seek 误差 ≤ 2s 的验收口径 |
 | tarball 打包安装 | `npm pack` 产物经 `dsh plugin add` 安装到全新 profile 后：宿主组件运行中、客户端 bundle 加载并挂载 Remote、模型实际调用课程检索工具、引用链接点击后播放器定位到 1870s |
+| 设备码授权闭环 | Host 发起设备码，面板展示 `userCode` / `verificationUri` 并轮询；批准后轮询返回 grant 并写入 dsh credentials；重启 dsh 后仍显示已授权 |
+| 令牌过期自动刷新 | 服务端吊销 access token 后，下一次检索触发 401 → 用 refresh token 轮换 → 重试成功；旧 refresh token 复用被拒（401） |
+| 设备绑定与退出 | 授权与业务请求绑定 `deviceId`，`x-device-id` 不匹配返回 403；退出登录删除本地 grant，后续检索提示未授权 |
 
 **平台硬约束（实现必须遵守）**
 
@@ -99,6 +102,7 @@
 4. **视频定位**：播放器所在的服务端必须支持 HTTP Range 请求，否则 seek 需要先下载整段视频，无法满足起播与定位指标。
 5. **插件安装与 peer 版本**：新 profile 自带 `pnpm-workspace.yaml`，`dsh plugin add <pkg>` 转发给 pnpm 时会因 workspace-root 检查失败，需追加 `-w`。插件 peer 版本必须与 dsh 版本精确对齐（当前 `0.2.1-rc.5`）；沿用旧范围（如 `^0.0.1-rc.1`）会解析到旧版依赖链，把未公开发布的 `@deepseek-ai/dsh-type-meta` 拉入解析并导致 404。
 6. **profile bundle 组成**：`dsh plugin add` 会自动把插件写入 `dsh.profile.bundles`；新 profile 仅含 `@deepseek-ai/dsh-base`，启用 Web UI 还需加入 `@deepseek-ai/dsh-web-app`，否则 CLI 不启动 web 服务。插件包不携带 `@deepseek-ai` 运行时依赖，由 dsh 宿主提供。
+7. **credentials 服务依赖**：`@deepseek-ai/dsh-base` 包含 `dsh-credentials-local`（服务名 `credentials`），但插件激活时它未必已就绪；必须把 `credentials` 与 `tools` 一起写进静态 `inject`，否则 `ctx.get('credentials')` 为空、插件激活报错。
 
 **引用交互实现决策**
 
@@ -265,6 +269,14 @@
 - 片段详情：`GET /v1/kb/segments/{segmentId}`，返回单片段元数据、展示标题与起止秒，供客户端点击历史回答中的引用时定位；同样要求鉴权与限流。
 - 播放会话：`POST /v1/playback/sessions`，请求 `segmentId`，返回 `sessionId / playlistUrl / expiresAt / watermark.label`。`playlistUrl` 为短时效签名 HLS，m3u8 内 key 与分片同样携带 token；浏览器不持 Bearer。`expiresAt` 至少覆盖一个片段播放窗口（60s），媒体源必须支持 CORS 与按需 Range。
 - 查询 embedding 在云端计算（单次成本可忽略），全库正文不下发。
+
+**授权服务（设备码）**
+
+- `POST /v1/auth/device/code`：请求 `clientId / deviceId`，返回 `deviceCode / userCode / verificationUri / expiresIn / interval`。`deviceId` 由插件首次登录时随机生成，后续与该设备绑定。
+- `POST /v1/auth/device/token`：请求 `deviceCode`，返回 `pending | authorized | expired`；`authorized` 时携带 grant：`accessToken / refreshToken / expiresAt / deviceId`。
+- `POST /v1/auth/refresh`：请求 `refreshToken / deviceId`，返回同一结构的 grant，并轮换 access/refresh token（旧 refresh token 立即失效）；设备不匹配返回 403。
+- 业务请求（检索、片段详情、播放会话）携带 `Authorization: Bearer <accessToken>` 与 `x-device-id`；缺失/过期 401，设备不匹配 403，客户端据此触发刷新、重新授权或提示设备异常。
+- grant 只保存在 dsh credentials 的本地记录中（`$DSH_HOME/.credentials.yaml`，0600）；不写入插件配置、不写日志、不下发浏览器。M2 阶段可由 credential-ref 指向内部 token，M3 起统一走设备码。
 
 **检索要求**
 

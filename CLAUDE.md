@@ -19,7 +19,8 @@
 5. 安装/打包：dsh 包 peer 版本精确锁 `0.2.1-rc.5`；`engines.dsh` 是强制门禁（不满足会阻止安装/激活），保持 `>=0.2.1-rc.5 <0.3.0`；新 profile 安装用 `dsh plugin --profile <name> add -w <tgz>`；Web UI 还需安装 `@deepseek-ai/dsh-web-app`。
 6. 插件最小权限：不注册 shell / 文件写入工具，不另起 HTTP 端口，不提交任何密钥；TTS 等本地能力用浏览器标准 API（Web Speech），不调用系统命令。
 7. 加密 HLS：dsh 无原生 HLS，用内置 hls.js + MSE 动态加载；普通 MP4 走原生 `<video>`。播放地址由 Host 调 `POST /v1/playback/sessions` 换签名 `playlistUrl`，浏览器不持 Bearer；`Hls.isSupported()` 优先，禁止仅凭 `canPlayType`（Chrome on macOS 会误报 `maybe`）跳过 hls.js。
-8. 鉴权与数据：M2 用 credential-ref 内部 token，M3 转设备码短时 token；指标只走云端鉴权事件白名单，不接第三方分析 SDK。
+8. 鉴权与数据：设备码授权为主（`device/code` → 轮询 `device/token` → `refresh` 轮换），S2 已验证；grant 存 dsh credentials 的 grant 记录，刷新用 `modifyRecord` 合并并发；credential-ref 仅作内部 token 回退。token 不进浏览器/日志/配置。指标只走云端鉴权事件白名单，不接第三方分析 SDK。
+9. Host 静态 `inject = ['tools', 'credentials']`：dsh 激活顺序不保证 `dsh-credentials-local` 先就绪，`credentials` 必须与 `tools` 一起声明。
 
 ## 常用命令
 
@@ -34,7 +35,8 @@ npx --yes @deepseek-ai/dsh@0.2.1-rc.5 --profile <name> --port <port> --no-open
 ## 代码地图
 
 - `src/index.ts`：Host 半（Config、`trend_coach_search` 工具、Remote 服务、云端请求）
-- `src/client/index.ts`：Browser 半（Remote spec、右栏面板、播放器、引用拦截）
+- `src/auth.ts`：Host 授权（credential-ref、设备码登录/轮询、grant 存储、401 刷新、设备绑定）
+- `src/client/index.ts`：Browser 半（Remote spec、右栏面板含设备登录、播放器、引用拦截）
 - `scripts/build-client.mjs`：Client bundle 构建与 `__ModuleLoader__` 包装
 - `cordis.patch.yml`：bundle patch，注入插件配置
 - `spike/`：mock KB、fixtures、测试视频（不随包发布）

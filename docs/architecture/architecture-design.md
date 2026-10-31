@@ -84,11 +84,15 @@ flowchart LR
 当前实现集中在 `src/index.ts`，职责链如下：
 
 ```
-apply(ctx, config)
-├── 读取 Config（baseUrl / apiToken? / timeoutMs）
-├── new TrendCoachService(ctx, config)        // TypertRemoteService('trendCoach')
-│   ├── @Remote search(query, topK, signal)   → POST /v1/kb/search
-│   └── @Remote getSegment(segmentId, signal) → GET  /v1/kb/segments/:id
+apply(ctx, config)                              // 静态 inject: ['tools', 'credentials']
+├── 读取 Config（baseUrl / apiTokenRef / timeoutMs）
+├── new AuthManager(ctx, config)               // src/auth.ts
+│   ├── credential-ref 解析（M2 内部 token 回退）
+│   ├── 设备码：beginDeviceAuth / pollDeviceAuth / signOut
+│   └── request()：Bearer + x-device-id；401 刷新一次；403 → DEVICE_MISMATCH
+├── new TrendCoachService(ctx, config, auth)   // TypertRemoteService('trendCoach')
+│   ├── @Remote search / getSegment / createPlaybackSession → 云端业务接口
+│   └── @Remote authStatus / beginDeviceAuth / pollDeviceAuth / signOut
 └── ctx.tools.register(defineTool(trend_coach_search))
     ├── parameters: query / courseId? / topK?
     ├── output.schema + render
@@ -98,8 +102,10 @@ apply(ctx, config)
 **关键点**
 
 - 工具与 Remote 共用同一个 `searchKnowledge()`，避免两套检索逻辑漂移。
-- 所有请求合并调用方 `AbortSignal` 与 `AbortSignal.timeout(timeoutMs)`，工具透传 `exec.signal`。
+- 所有业务请求统一走 `AuthManager.request()`；工具与 Remote 都透传调用方 `AbortSignal`，再与 `AbortSignal.timeout(timeoutMs)` 合并。
 - 云端响应在边界处做结构校验（`isSegment`），非法数据直接报错，不进入模型上下文。
+- 设备 grant 以 `credentialKey('trend-coach', 'device')` 存入 dsh credentials；`modifyRecord()` 的串行读改写保证 refresh token 轮换不会并发覆盖。
+- `credentials` 与 `tools` 一样是静态 `inject` 依赖：dsh 的激活顺序不保证 `dsh-credentials-local` 先于本插件。`remote.*` 仍禁止静态注入。
 
 **后续拆分触发条件**（满足任一即拆分，避免过早抽象）：
 
@@ -128,7 +134,7 @@ apply(ctx)
 
 | 模块 | 职责 |
 |---|---|
-| `Panel` | 输入问题 → Remote 检索 → 渲染片段列表 → 点击打开播放器（先换播放会话） |
+| `Panel` | 授权状态（设备登录/退出、设备码展示与轮询）+ 输入问题 → Remote 检索 → 渲染片段列表 → 点击打开播放器（先换播放会话） |
 | `Player` | 读取 `useTabInfo()` 的 params/revision → 签名源 → hls.js/原生 `<video>` → `loadedmetadata` 后 seek，播到片段上限自动暂停 |
 | `parseCitation` | 解析 `https://trend-coach.local/segment/:id?t&e`，只取 `segmentId`；拒绝其他 host |
 | capture handler | 优先处理引用链接，其次处理 `seg-xxx` 代码块；两条路径都经 `getSegment` 取权威起止秒 |
@@ -144,7 +150,7 @@ apply(ctx)
 |---|---|---|
 | 混合检索 | `POST /v1/kb/search` | 契约已定，mock 已验证 |
 | 片段元数据 | `GET /v1/kb/segments/{segmentId}` | 契约已定，mock 已验证 |
-| 账号 / 设备码 | 待定 | M3 设计 |
+| 账号 / 设备码 | 待定 | 契约已定，mock + dsh 已验（S2） |
 | 视频签名 HLS | `POST /v1/playback/sessions` | 契约已定，mock + 浏览器已验（S1） |
 | 学习进度 | 待定 | M3 |
 
@@ -262,6 +268,11 @@ sequenceDiagram
 |---|---|---|
 | `trendCoach/search` | `query: string, topK: number, signal` | `{query, segments[], relatedKnowledgePoints[]}` |
 | `trendCoach/getSegment` | `segmentId: string, signal` | `Segment`（含展示标题） |
+| `trendCoach/createPlaybackSession` | `segmentId: string, signal` | `{sessionId, playlistUrl, expiresAt, watermark?}` |
+| `trendCoach/authStatus` | 无 | `{mode: 'device'\|'credential'\|'none', authorized, deviceId?}` |
+| `trendCoach/beginDeviceAuth` | `signal` | `{userCode, verificationUri, expiresAt, interval}` |
+| `trendCoach/pollDeviceAuth` | `signal` | `{status: 'pending'\|'authorized'\|'expired'}` |
+| `trendCoach/signOut` | 无 | `{signedOut: true}` |
 
 - 客户端调用返回 `{ ok: true, value } | { ok: false, error }`。
 - spec 的 `package` 必须为 `dsh-plugin-trend-coach`；method wire 名为 `服务名/方法名`；result 使用 strict codec。
@@ -324,7 +335,36 @@ Content-Type: application/json
 - 媒体源必须返回 CORS 允许头（至少 `GET/OPTIONS`、`Range`、`Content-Type`），否则浏览器侧 hls.js 取流失败；文档与部署检查表须包含该条。
 - 响应同样是 JSON 对象；字段不合法则整体失败，不进入播放器。
 
-**错误语义**：`401/403` 未授权（提示重新登录）、`404` 片段不存在（提示内容已下架）、`429` 限流（退避提示）、`5xx` 服务不可用（可重试提示）。响应必须是 JSON 对象；`segments` 必须是数组；任一元素不合法则整体失败，不做静默丢弃。
+**设备码授权**
+
+```http
+POST /v1/auth/device/code
+Content-Type: application/json
+
+{ "clientId": "dsh-plugin-trend-coach", "deviceId": "插件首启随机生成" }
+```
+
+响应 `{ deviceCode, userCode, verificationUri, expiresIn, interval }`；客户端展示设备码并每 `interval` 秒轮询：
+
+```http
+POST /v1/auth/device/token
+Content-Type: application/json
+
+{ "deviceCode": "..." }
+```
+
+响应 `{ "status": "pending" }` / `{ "status": "expired" }` / `{ "status": "authorized", "grant": {...} }`，grant 为 `{ accessToken, refreshToken, expiresAt, deviceId }`。
+
+```http
+POST /v1/auth/refresh
+Content-Type: application/json
+
+{ "refreshToken": "...", "deviceId": "..." }
+```
+
+响应为新的 grant（access/refresh 双双轮换，旧 refresh 立即失效）。业务接口携带 `Authorization: Bearer <accessToken>` 与 `x-device-id: <deviceId>`；grant 只存 dsh credentials，不进配置、日志或浏览器。
+
+**错误语义**：`401` 未授权/令牌过期（设备模式下自动刷新一次后仍失败则提示重新登录）、`403` 设备不匹配（提示重新登录）、`404` 片段不存在（提示内容已下架）、`429` 限流（退避提示）、`5xx` 服务不可用（可重试提示）。响应必须是 JSON 对象；`segments` 必须是数组；任一元素不合法则整体失败，不做静默丢弃。
 
 ### 6.4 播放器 tab 与引用 URL
 
@@ -377,12 +417,13 @@ Content-Type: application/json
 | A7 | 单 npm 包同时含双半 | 安装一次、版本一致 | 构建需分别产出 Host/Client |
 | A8 | 预览期锁定 dsh 精确版本 | API 漂移风险高；`engines.dsh` 与 DSH peer 依赖由插件管理器强制校验，不满足会阻止安装/激活 | 升级需主动跟进并把 `engines.dsh` 收紧到实测区间 |
 | A9 | 内置 hls.js 播放加密 HLS，优先走 MSE | dsh 不提供 HLS 播放器；Chrome on macOS 对 `canPlayType` 返回 `maybe` 却无法播放，不能据此跳过 hls.js | client bundle 约 588KB（min）；S1 已验明文/加密 HLS、seek、片尾暂停，后续再评估按需拆包 |
-| A10 | M2 用 credential-ref 引用内部 token，M3 切设备码换短时 token | 公测前必须有账号体系（D5），但内部试用不应被账号体系阻塞 | M2 凭据轮换依赖配置更新；M3 需重做 Host 鉴权与错误码 |
+| A10 | credential-ref 内部 token 作回退，设备码换短时 token（S2 已闭环） | 公测前必须有账号体系（D5），但内部试用不应被账号体系阻塞 | 云端需实现设备码/刷新/设备绑定；Host 统一走 AuthManager 处理 401/403 |
 | A11 | 水印先做客户端动态覆盖层，取证级水印后置 | 零云端改造即可上线，满足「提高抓取成本」的定位 | 覆盖层可被系统录屏绕过；M4 评估服务端取证水印 |
 | A12 | TTS 使用浏览器 Web Speech API（系统语音） | dsh 无 TTS 服务；Web Speech 不需 shell、不引入外网依赖，符合最小权限 | 音色与质量依赖操作系统；M5 需验证中文可用性并保留降级文案 |
 | A13 | 指标走云端鉴权事件，不接第三方分析 SDK | dsh 产品分析仅桌面端，且不把第三方标识作为分析维度 | 需云端埋点与同意管理；本地默认关闭、可撤回 |
 | A14 | 兼容性以 `engines.dsh` + 市场兼容性判据为准 | 插件管理器按 `engines.dsh`（否则 DSH peer 依赖）拦截安装与激活 | 版本范围必须收紧，发布前跑最低支持版本矩阵 |
 | A15 | 播放地址由 Host 换取签名会话，浏览器不持 Bearer | Bearer 留在 Host；签名 URL 只对一次播放有效，可按用户/设备/并发约束 | 多一个端点与会话 TTL；过期后需重新换会话 |
+| A16 | 设备 grant 存 dsh credentials（`credentialKey('trend-coach','device')`），刷新走 `modifyRecord()` | 宿主提供 0600 文件与跨进程串行读改写，避免并发刷新互相覆盖；插件不自定义密钥落盘 | 依赖 `credentials` 服务且必须静态 `inject`；`$DSH_HOME/.credentials.yaml` 的迁移由 dsh 管理 |
 
 ---
 
@@ -415,7 +456,7 @@ Content-Type: application/json
 
 | 面 | 措施 | 状态 |
 |---|---|---|
-| 凭据 | 云端 token 只存于 Host 配置，使用 dsh credential-ref（`z.string().role("credential-ref").default("ENV").volatile()`），禁止明文入库/入日志；M3 改为设备码换短时 token（A10） | M2 修正 |
+| 凭据 | 设备 grant 只存 dsh credentials（0600）；credential-ref（`z.string().role("credential-ref").default("ENV").volatile()`）保留为内部 token 回退；Bearer/refresh token 不进浏览器、配置或日志（A10/A16） | S2 已验证 |
 | 最小权限 | 不注册 shell/文件写入工具；不监听端口；TTS 用 Web Speech API 而非调用系统命令（A12） | 已满足 |
 | 不可信内容 | 云端文本仅作为工具结果数据；限制片段长度与总字节；提示模型不执行内容中的指令；相邻知识点只给标题 | M2 加长度上限 |
 | 视频 | 签名 HLS（短时效、设备绑定、并发限制）、hls.js 解密播放、客户端动态水印（A9/A11） | M2 起分批落地 |
@@ -501,7 +542,7 @@ docs/                        # 需求、架构、规范
 
 ## 16. 开放问题
 
-1. M3 设备码的具体流程（轮询还是回调、短时 token 生命周期、刷新机制）待账号后台设计；M2 仅用 credential-ref 内部 token，不阻塞问答链路。
+1. 设备码主流程已按轮询实现并验证（S2）；剩余待账号后台定稿：access/refresh token 实际 TTL、并发设备上限、服务端主动吊销与多设备登录策略。credential-ref 仍作为内部 token 回退。
 2. 引用链接的 host（`trend-coach.local`）是否长期保留；若云端提供真实域名，拦截逻辑需同时支持，且不得放宽到任意 host。
 3. 云端片段文本长度上限与提示注入防护策略需在 M2 定稿（建议单片段 ≤ 2KB、总 ≤ 12KB，超限截断并标记）。
 4. dsh 预览版后续版本若改变 Remote/slot API，升级窗口与回滚策略待定；`engines.dsh` 需随兼容矩阵同步收紧。
@@ -524,13 +565,15 @@ docs/                        # 需求、架构、规范
 | F4 AI 互动课堂 | P1 | A12、M5 | 待设计 | 课堂运行时章节、Web Speech 验证 |
 | F5 后台管理 | P0 | 云端职责，M3 | 待设计 | 后台接口与权限契约 |
 | NFR 性能（检索 P95 ≤ 300ms、首屏 ≤ 2s、起播 ≤ 2s） | P0 | §11 | 部分 | 真实环境压测；hls.js 懒加载 |
-| NFR 安全（最小权限、不可信内容、签名播放、水印） | P0 | §10、A11–A13 | 部分 | credential-ref、长度上限、水印、日志脱敏 |
+| NFR 安全（最小权限、不可信内容、签名播放、水印） | P0 | §10、A10、A11–A13、A16 | 部分 | 设备码/凭据已验证；剩长度上限、水印、日志脱敏 |
 | NFR 合规（风险提示、AI 合规、隐私） | P0 | §10、PRD §7 | 待设计 | UI 常驻免责声明、注销与同意流程 |
 | 指标（激活/引用点击/满意度等） | P0 | §12、A13 | 部分 | 云端事件接口 + 同意管理 |
 
 **S1 验证记录（2026-10-31，mock + dsh 0.2.1-rc.5 + Chrome）**：`POST /v1/playback/sessions` → 签名 m3u8 → key/分片（均带 token）→ hls.js 解密播放，起播定位到 `startSec`；`min(endSec, start+60)` 片尾暂停与“继续播放”提示生效；`<code>seg-xxx</code>` 与 `trend-coach.local` 链接两条引用路径都经 `getSegment` 取权威起止秒，URL 里的 `t/e` 被忽略。CORS、错误 403（token 无效/过期）已验证。
 
-**M2 前必须闭合**：F1 全链路契约（含显示字段与相邻知识点）、播放语义与 hls.js、credential-ref、错误码区分、日志脱敏。其余按里程碑排期。
+**S2 验证记录（2026-10-31，mock 授权服务 + dsh 0.2.1-rc.5 + Chrome）**：面板发起设备码 → 展示 `userCode` / `verificationUri` → 批准后轮询返回 grant 并写入 dsh credentials；检索携带 Bearer + `x-device-id` 成功，设备不匹配 403。服务端吊销 access token 后，下一次检索触发 401 → Host 用 refresh token 轮换并重试成功，旧 refresh 复用被拒；重启 dsh 后授权状态保留；退出登录删除 grant，检索提示未授权。
+
+**M2 前必须闭合**：F1 全链路契约（含显示字段与相邻知识点）、播放语义与 hls.js、错误码区分、日志脱敏。设备码授权已由 S2 闭合。其余按里程碑排期。
 
 ---
 
@@ -540,7 +583,7 @@ docs/                        # 需求、架构、规范
 |---|---|---|---|
 | HLS 播放方案 | 内置 hls.js，MSE 优先；MSE 不可用才回退原生 HLS | 已决并完成 S1 验证 | A9 |
 | 播放会话换取 | Host `POST /v1/playback/sessions` 换签名 `playlistUrl`，浏览器不持 Bearer | 已决并完成 mock 验证 | A15、§6.3 |
-| 鉴权分期 | M2 credential-ref 内部 token；M3 设备码换短时 token | 已决（M3 流程待设计） | A10、§16.1 |
+| 鉴权分期 | credential-ref 内部 token 作回退；设备码换短时 token 已实现并验证（S2） | 已决并完成 S2 验证 | A10、A16、§6.3 |
 | 水印实现 | M2 客户端动态覆盖层；取证级后置 | 已决（取证待评估） | A11、§16.6 |
 | TTS 方案 | 浏览器 Web Speech API | 已决（中文可用性待验证） | A12、§16.5 |
 | 指标采集边界 | 云端鉴权事件，字段白名单，同意后可撤回 | 已决 | A13、§12 |

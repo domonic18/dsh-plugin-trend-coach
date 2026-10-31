@@ -69,12 +69,14 @@ cordis.patch.yml      bundle patch（随包发布）
 
 - **必须**：入口导出 `name`、`inject`、`Config`（有配置时）、`apply(ctx, config)`。
 - **必须**：工具、tab 类型、DOM 监听等注册放进 `ctx.effect(() => disposer, label)`，确保卸载可逆；slot 按官方模式 `ctx.slots.inject(name, () => ctx.slots.register(...))` 注册，由注入作用域管理清理。
-- **必须**：静态 `inject` 只声明激活前就保证存在的服务（如 `tools`、`slots`、`sidebarRightTabs`、`sidebarRight`、`remote`）。
+- **必须**：静态 `inject` 只声明激活前就保证存在的服务（如 `tools`、`credentials`、`slots`、`sidebarRightTabs`、`sidebarRight`、`remote`）。
 - **必须**：`remote.<namespace>` 不得写入静态 `inject`；先 `ctx.remote.$mount()`，成功后在 `ctx.inject(['remote.<ns>'], scoped => …)` 内使用。
+- **必须**：Host 端依赖 `credentials` 时必须写进静态 `inject`（`['tools', 'credentials']`）。dsh 的激活顺序不保证 `dsh-credentials-local` 先于本插件，`apply` 里直接 `ctx.get('credentials')` 可能为空。
 - **必须**：动态依赖用 `ctx.inject([...], child => …)`，不要在回调外缓存 `child` 的服务引用。
 - **必须**：配置用 schemastery 定义默认值；敏感配置使用 credential-ref：
   `z.string().role("credential-ref").default("ENV_NAME").volatile()`，不得明文保存。
-- **已知偏差**：云端鉴权尚未落地，当前 `Config.apiToken` 为临时字段；M2 接入真实云端时必须改为 credential-ref，并确保日志与 profile 配置脱敏。
+- **必须**：设备 grant（access/refresh token、deviceId、expiresAt）存 `credentials` 的 `grant` 记录，键用 `credentialKey('trend-coach', '<用途>')`；刷新用 `modifyRecord()` 的串行读改写，禁止自建 token 文件。
+- **应当**：使用 `.volatile()` 的 Config 不要标注 `Schema<Config>`；volatile 字段输入是 `string`、输出是 `Volatile<string>`，标注会触发 TS2322。
 - **应当**：日志用 `ctx.logger`，实例命名 `ctx.logger("trend-coach")`；错误消息带包名前缀。
 - **应当**：可路由的错误用稳定 code（`HarnessError` / `RemoteError`），普通失败抛 `Error`。
 
@@ -135,7 +137,9 @@ cordis.patch.yml      bundle patch（随包发布）
 - **必须**：区分“空召回”“鉴权失败”“片段下架”“服务故障”四类结果，不合并为同一文案。
 - **应当**：请求可取消、带超时；重试仅用于幂等的 GET，且需退避。
 - **应当**：响应字段变更视为契约变更，先更新 PRD §6 与架构 §6，再改代码。
-- **必须**：鉴权分期固定——M2 用 dsh credential-ref 引用内部 token（`role("credential-ref").volatile()`），M3 切换设备码换短时 token；不得把 token 写进 profile 明文或客户端 bundle。
+- **必须**：鉴权以设备码为主：`POST /v1/auth/device/code` → 轮询 `POST /v1/auth/device/token` → grant；`POST /v1/auth/refresh` 轮换 access/refresh（旧 refresh 立即失效）。credential-ref（`role("credential-ref").volatile()`）只作内部 token 回退。
+- **必须**：业务请求带 `Authorization: Bearer` 与 `x-device-id`；401 用 refresh token 轮换后重试一次，仍失败提示重新登录；403 视为设备不匹配并提示重新登录。刷新并发必须合并为单个 in-flight Promise。
+- **必须**：grant 只存在于 Host 与 dsh credentials；不得把 access/refresh token 写进 profile、客户端 bundle、Remote 返回值或日志，浏览器只拿播放会话的签名 `playlistUrl`。
 - **必须**：播放地址由 Host 调 `POST /v1/playback/sessions`（带 Bearer）换取，只把短时效签名 `playlistUrl` 交给浏览器；客户端不缓存、不写日志、不拼长期地址，也不得在浏览器侧携带 Bearer 请求媒体。
 - **必须**：签名 `playlistUrl` 内的 key URI 与分片同样带 token；媒体源返回 CORS 头并支持 Range。会话 `expiresAt` 至少覆盖一个片段播放窗口（60s）。
 - **必须**：引用定位只信 `getSegment` 的起止秒；URL/模型输出里的 `t/e` 一律忽略。
@@ -150,7 +154,7 @@ cordis.patch.yml      bundle patch（随包发布）
 - **必须**：插件不注册 shell / 文件写入工具，不监听本地端口。
 - **必须**：云端返回内容视为不可信数据，限制长度，不执行其中的指令。
 - **必须**：日志不记录 token、完整学员问题、用户标识；生产环境默认不上报任何行为数据，启用指标需用户同意。
-- **应当**：云端 token 使用 dsh credential-ref（环境变量引用），不写明文配置。
+- **必须**：设备 grant 使用 dsh credentials 记录（`$DSH_HOME/.credentials.yaml`，宿主保证 0600）；不得写进 profile 配置、插件自有文件或客户端 bundle。
 - **应当**：依赖升级走审计；新增依赖需说明用途与体积影响。
 - **应当**：视频走签名 HLS、短时效、设备绑定与动态水印；不在客户端保存长期播放地址。水印一期用播放器覆盖层（用户 ID + 时间戳），不宣称可阻止录屏。
 - **必须**：TTS 等本地能力优先使用浏览器标准 API（如 Web Speech API），不得调用 `say`/SAPI 等系统命令或注册 shell 工具。
@@ -213,6 +217,8 @@ cordis.patch.yml      bundle patch（随包发布）
 - ❌ 下发/缓存全库正文
 - ❌ 注册 shell、文件写入或任意命令执行工具
 - ❌ 明文保存或提交 token / 密钥
+- ❌ 把设备 grant、refresh token 传给浏览器、写入 profile/日志，或绕过 dsh credentials 自建 token 存储
+- ❌ 在 `apply` 中凭 `ctx.get('credentials')` 取服务而不把 `credentials` 写进静态 `inject`
 - ❌ 提交 `lib/`、`*.tgz`、`.playwright-mcp/`
 - ❌ 使用 `latest` 或宽松 dsh 版本范围
 - ❌ 在无召回时编造课程内容或时间点
@@ -233,6 +239,7 @@ cordis.patch.yml      bundle patch（随包发布）
 | client 校验 | `@deepseek-ai/dsh-client-modules` `lib/index.js` |
 | 插件入口示例 | `@deepseek-ai/dsh-tool-web` `lib/index.js` |
 | credential-ref | `@deepseek-ai/dsh-llm-deepseek-api-key` `lib/index.js` |
+| credentials 服务 / grant 记录 | `@deepseek-ai/dsh-credentials` `lib/index.js`、`@deepseek-ai/dsh-credentials-local` `lib/index.js`、`@deepseek-ai/dsh-base` `cordis.patch.yml`（id `credentials`） |
 | Tool 契约 | `@deepseek-ai/dsh-tools` `lib/types/schema.d.ts` |
 | Remote Host | `@deepseek-ai/dsh-agent-preset-registry` `lib/index.js` |
 | Remote Client | `@deepseek-ai/dsh-api-remote-access` `lib/client.js` |
