@@ -10,6 +10,8 @@ test('dsh 版本门禁与 peer 精确对齐', () => {
   assert.equal(pkg.peerDependencies['@deepseek-ai/dsh-credentials'], pkg.devDependencies['@deepseek-ai/dsh-credentials'])
   assert.equal(pkg.peerDependencies['@deepseek-ai/dsh-tools'], '0.2.1-rc.5')
   assert.equal(pkg.peerDependencies['@deepseek-ai/dsh-typert-protocol'], '0.2.1-rc.5')
+  assert.equal(pkg.peerDependencies['@deepseek-ai/dsh-agent'], '0.2.1-rc.5')
+  assert.equal(pkg.peerDependencies['@deepseek-ai/dsh-system-prompt'], '0.2.1-rc.5')
   assert.equal(pkg.peerDependencies['@deepseek-ai/cordis'], '~4.0.5')
   assert.equal(pkg.peerDependencies['@deepseek-ai/schemastery'], '~3.18.5')
 })
@@ -30,6 +32,11 @@ test('发布包只含运行时产物', () => {
     'lib/index.d.ts',
     'lib/client.js',
     'lib/client/index.d.ts',
+    'lib/client/context-model.js',
+    'lib/client/context-bridge.js',
+    'lib/client/learner-context.js',
+    'lib/client/selection.js',
+    'lib/host/learner-context.js',
     'README.md',
     'LICENSE',
   ]) {
