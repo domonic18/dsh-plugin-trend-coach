@@ -226,9 +226,9 @@ sequenceDiagram
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `query` | string | 是 | 学员问题检索语句 |
-| `courseId` | string | 否 | 限定课程 |
-| `topK` | number | 否 | 默认 5 |
+| `query` | string | 是 | 学员问题检索语句，去首尾空白后 1–500 字符 |
+| `courseId` | string | 否 | 限定课程，≤64 字符且仅 `[A-Za-z0-9._-]` |
+| `topK` | number | 否 | 取整收敛到 1–20，默认 5 |
 
 **输出**
 
@@ -258,6 +258,7 @@ sequenceDiagram
 
 - `courseTitle/chapterTitle/knowledgePointTitle` 为展示字段，用于渲染「课程 → 章节 → 知识点」；缺失时客户端回退显示 ID，不阻塞引用。
 - `relatedKnowledgePoints` 在空召回或最高分低于阈值时返回相邻知识点（≤ 5 条），支撑 F1.4「课程未覆盖 → 给最近知识点」；不得包含时间点，避免被误当引用。
+- 响应边界：单次响应 ≤512KiB；单片段 `text` ≤4000 字符、`title` ≤200 字符；`relatedKnowledgePoints` ≤5 条；越界或结构不合法整体失败，不静默截断。
 - **当前差距**：M0 实现仅返回基础字段与空数组；上述字段为 M2 契约目标，云端与工具渲染需同步补齐。
 
 **渲染约定**：每个片段附 `https://trend-coach.local/segment/<segmentId>?t=<start>&e=<end>`，并指示模型原样复制、不得自行生成时间点。空结果渲染固定拒答文案，并附 `relatedKnowledgePoints` 标题作为「相近内容」提示（仅标题，不给时间点）。
@@ -300,7 +301,7 @@ Content-Type: application/json
 }
 ```
 
-`score` 为 0–1；`relatedKnowledgePoints` 可为空数组，仅在 `segments` 为空或低分时填充。云端不得在相邻知识点中携带 `startSec/endSec`。
+`score` 为 0–1；`relatedKnowledgePoints` 可为空数组，仅在 `segments` 为空或低分时填充。云端不得在相邻知识点中携带 `startSec/endSec`。请求与响应边界同 §6.1：Host 在调用前校验入参，返回后校验结构、字段上限与响应体积。
 
 **片段**
 
@@ -441,14 +442,15 @@ Content-Type: application/json
 
 | 场景 | Host 行为 | 客户端表现 |
 |---|---|---|
-| 参数非法 | 工具 schema/手写校验拦截，返回普通错误 | 模型收到错误并解释 |
-| 网络超时 | `AbortSignal.timeout` 中止，抛带包名前缀的 Error | 面板显示可读错误；回答提示重试 |
-| 401/403 | 抛鉴权错误 | 提示登录/授权失效 |
-| 404 | 抛片段不存在 | 提示内容已下架 |
-| 5xx / 响应不合法 | 抛结构化错误，不降级为“无结果” | 区分“服务故障”与“课程未覆盖” |
+| 参数非法 | 边界校验拦截（query 1–500、topK 1–20、courseId/segmentId 白名单），Remote 映射 `gateway/bad-request`，工具返回普通错误 | 模型收到可读错误；面板显示中文文案 |
+| 网络超时 | `AbortSignal.timeout` 中止，映射 `gateway/internal` + 超时文案 | 面板显示可读错误；回答提示重试 |
+| 401/403 | 自动刷新一次后仍失败抛鉴权错误（`AUTH_EXPIRED` / `DEVICE_MISMATCH`） | 提示登录/授权失效 |
+| 404 | 上游 404 映射「内容不存在或已下架」 | 播放器提示「引用片段不可用，可能已下架」 |
+| 429 | 上游 429 映射「请求过于频繁」 | 提示稍后重试 |
+| 5xx / 响应不合法或过大 | 结构化错误，不降级为“无结果” | 区分“服务故障”与“课程未覆盖” |
 | 空召回 | 正常返回空数组 + `relatedKnowledgePoints` | 模型输出固定拒答文案，仅提示相近知识点标题 |
 
-**约定**：可机器路由的错误使用稳定 code（`RemoteError` / `HarnessError`）；日志只记录必要上下文，不记录凭据与完整学员问题（生产环境）。
+**约定**：Typert 线协议失败码仅 `gateway/bad-request｜cancelled｜internal`：入参非法→bad-request，取消→cancelled，其余→internal + 可读中文文案；业务内部 code 不上线。日志只记录必要上下文，不记录凭据、完整 query 或设备 ID（生产环境）。
 
 ---
 
@@ -458,9 +460,9 @@ Content-Type: application/json
 |---|---|---|
 | 凭据 | 设备 grant 只存 dsh credentials（0600）；credential-ref（`z.string().role("credential-ref").default("ENV").volatile()`）保留为内部 token 回退；Bearer/refresh token 不进浏览器、配置或日志（A10/A16） | S2 已验证 |
 | 最小权限 | 不注册 shell/文件写入工具；不监听端口；TTS 用 Web Speech API 而非调用系统命令（A12） | 已满足 |
-| 不可信内容 | 云端文本仅作为工具结果数据；限制片段长度与总字节；提示模型不执行内容中的指令；相邻知识点只给标题 | M2 加长度上限 |
+| 不可信内容 | 云端文本仅作为工具结果数据；响应 ≤512KiB、片段文本 ≤4000 字符、标题 ≤200 字符；提示模型不执行内容中的指令；相邻知识点只给标题 | S4 已验证体积/长度上限；提示注入防护待 M2 |
 | 视频 | 签名 HLS（短时效、设备绑定、并发限制）、hls.js 解密播放、客户端动态水印（A9/A11） | M2 起分批落地 |
-| 日志 | 不输出 token、完整 query、用户标识；播放地址不落日志 | 待落实 |
+| 日志 | 不输出 token、完整 query、用户标识；播放地址不落日志 | S4 已验证：Host 只记操作名与错误类型；mock 掩码 userCode/deviceId、不记 query 原文 |
 | 依赖 | 只依赖 dsh 宿主提供的运行时包；定期审计 | 已有 |
 
 ---
@@ -477,7 +479,8 @@ Content-Type: application/json
 
 ## 12. 可观测性
 
-- 统一使用 `ctx.logger`，建议实例命名 `ctx.logger('trend-coach')`；错误日志带包名前缀。
+- 统一使用 `ctx.logger`，实例命名 `ctx.logger('trend-coach')`；错误日志带包名前缀。
+- 失败日志只记录操作名与错误类型（如 `AuthError`、`UpstreamError`），不记录 token、deviceId、query 原文或上游响应体。
 - 一期不接入第三方分析 SDK：dsh 自带的产品分析仅覆盖桌面端，且不把第三方插件标识作为分析维度（A13）。
 - 指标上报走云端鉴权事件接口，与账号绑定，字段最小化；未登录或不 consent 时不上报。
 - 事件白名单（M2 起）：`search_requested`（耗时、topK、命中数、是否空召回）、`citation_clicked`（segmentId）、`player_started`（起播耗时、是否自动播放被拒）；**不含** query 原文、回答内容、完整播放地址。
@@ -491,6 +494,8 @@ Content-Type: application/json
 ```
 src/
 ├── index.ts                 # Host：Config、工具、Remote 服务、云端访问
+├── auth.ts                  # Host：设备码授权、grant 存储、令牌刷新
+├── errors.ts                # Host：入参/响应边界校验、错误映射、限长 JSON 读取
 └── client/
     ├── index.ts             # Client：Remote spec、面板、播放器、引用拦截
     └── dsh.d.ts             # dsh 客户端服务的最小类型声明
@@ -565,7 +570,7 @@ docs/                        # 需求、架构、规范
 | F4 AI 互动课堂 | P1 | A12、M5 | 待设计 | 课堂运行时章节、Web Speech 验证 |
 | F5 后台管理 | P0 | 云端职责，M3 | 待设计 | 后台接口与权限契约 |
 | NFR 性能（检索 P95 ≤ 300ms、首屏 ≤ 2s、起播 ≤ 2s） | P0 | §11 | 部分 | 真实环境压测；hls.js 懒加载 |
-| NFR 安全（最小权限、不可信内容、签名播放、水印） | P0 | §10、A10、A11–A13、A16 | 部分 | 设备码/凭据已验证；剩长度上限、水印、日志脱敏 |
+| NFR 安全（最小权限、不可信内容、签名播放、水印） | P0 | §10、A10、A11–A13、A16 | 部分 | 设备码/凭据、水印、输入/响应上限、日志脱敏已验证（S1–S4）；剩真实云端签名与限流策略、提示注入防护 |
 | NFR 合规（风险提示、AI 合规、隐私） | P0 | §10、PRD §7 | 待设计 | UI 常驻免责声明、注销与同意流程 |
 | 指标（激活/引用点击/满意度等） | P0 | §12、A13 | 部分 | 云端事件接口 + 同意管理 |
 
@@ -575,7 +580,9 @@ docs/                        # 需求、架构、规范
 
 **S3 验证记录（2026-10-31，mock + dsh 0.2.1-rc.5 + Chrome）**：无召回时 mock 返回 `relatedKnowledgePoints`（≤3 条、仅标题），工具渲染与右栏面板均展示；模型回答明确「课程未覆盖」，并标注相关知识点不构成引用、无时间点，回答中无引用链接。播放器新增 `[startSec, endSec]` 高亮条与当前位置标记：485–750s 片段定位后高亮正确，播至 `min(endSec, start+60)=545s` 自动暂停仍生效。
 
-**M2 前必须闭合**：F1 全链路契约（真实云端显示字段与相邻知识点）、播放语义与 hls.js 真实签名联调、错误码区分、日志脱敏。设备码授权已由 S2 闭合。其余按里程碑排期。
+**S4 验证记录（2026-10-31，mock + dsh 0.2.1-rc.5 + Chrome）**：Host 边界校验 query 1–500、topK 1–20、courseId/segmentId 白名单；编译产物断言覆盖合法/非法入参与错误映射（bad-request / cancelled / internal）。服务端重启导致 refresh 失效时，面板显示「登录已过期，请重新设备授权」（无内部 code 前缀），重新设备授权后检索恢复；合法格式但不存在的片段返回「引用片段不可用，可能已下架」。mock 日志仅记录 query 长度与掩码后的 userCode/deviceId，无完整 query；正常检索与无召回兜底无回归。
+
+**M2 前必须闭合**：F1 全链路契约（真实云端显示字段与相邻知识点）、播放语义与 hls.js 真实签名联调。设备码授权、错误码映射与日志脱敏已由 S2/S4 闭合。其余按里程碑排期。
 
 ---
 

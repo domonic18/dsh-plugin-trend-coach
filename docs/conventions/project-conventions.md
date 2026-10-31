@@ -133,6 +133,8 @@ cordis.patch.yml      bundle patch（随包发布）
 
 - **必须**：HTTPS + Bearer 鉴权 + 限流；只读接口；不下发全库正文。
 - **必须**：Host 在边界处校验响应结构；`segments` 非数组或元素不合法即失败，不静默过滤。
+- **必须**：Host 边界限制 `query` 1–500 字符、`topK` 1–20、`courseId` ≤64 且 `[A-Za-z0-9._-]`、`segmentId` 形如 `seg-...` 且 ≤80；响应 ≤512KiB、单片段 `text` ≤4000 字符、`relatedKnowledgePoints` ≤5 条。
+- **必须**：Typert 失败码仅 `gateway/bad-request｜cancelled｜internal`：入参非法→bad-request，取消→cancelled，其余→internal + 可读中文文案；学员界面不显示内部 code。
 - **必须**：引用数据只来自云端（`segmentId`、起止秒、标题），模型不得生成时间点。
 - **必须**：区分“空召回”“鉴权失败”“片段下架”“服务故障”四类结果，不合并为同一文案。
 - **应当**：请求可取消、带超时；重试仅用于幂等的 GET，且需退避。
