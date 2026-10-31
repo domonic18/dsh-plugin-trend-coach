@@ -14,6 +14,7 @@ import type {
   RemoteDeviceAuthStartResult,
   RemoteKnowledgePointResult,
 } from './dsh.js'
+import { learnerContextStore } from './learner-context.js'
 
 export interface CatalogOpenTarget {
   segmentId: string
@@ -384,6 +385,10 @@ export function CatalogPanel({
         cache.point = undefined
         setCourse(result.value)
         setPoint(undefined)
+        learnerContextStore.setScene({
+          courseId: result.value.courseId,
+          courseTitle: result.value.title,
+        })
       } else {
         setError(result.error.message)
       }
@@ -401,6 +406,19 @@ export function CatalogPanel({
       if (result.ok) {
         cache.point = result.value
         setPoint(result.value)
+        const chapter = cache.course?.chapters.find(
+          (item) => item.chapterId === result.value.chapterId,
+        )
+        learnerContextStore.setScene({
+          courseId: result.value.courseId,
+          ...(cache.course?.courseId === result.value.courseId
+            ? { courseTitle: cache.course.title }
+            : {}),
+          chapterId: result.value.chapterId,
+          ...(chapter === undefined ? {} : { chapterTitle: chapter.title }),
+          knowledgePointId: result.value.knowledgePointId,
+          knowledgePointTitle: result.value.title,
+        })
       } else {
         setError(result.error.message)
       }
@@ -415,11 +433,18 @@ export function CatalogPanel({
     cache.point = undefined
     setCourse(undefined)
     setPoint(undefined)
+    learnerContextStore.clearScene()
   }
 
   const backToCourse = () => {
     cache.point = undefined
     setPoint(undefined)
+    if (course !== undefined) {
+      learnerContextStore.setScene({
+        courseId: course.courseId,
+        courseTitle: course.title,
+      })
+    }
   }
 
   const play = async (target: CatalogOpenTarget) => {

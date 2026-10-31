@@ -7,6 +7,8 @@ import type {
   DeviceAuthStart,
   EventsConsent,
   KnowledgePointDetail,
+  LearnerContextAck,
+  LearnerContextUpdate,
   PlaybackSession,
   ProgressResult,
   SearchResult,
@@ -65,6 +67,10 @@ export type RemoteProgressResult =
   | { ok: true; value: ProgressResult }
   | { ok: false; error: { code: string; message: string } }
 
+export type RemoteLearnerContextResult =
+  | { ok: true; value: LearnerContextAck }
+  | { ok: false; error: { code: string; message: string } }
+
 interface SlotsService {
   inject(key: string, callback: () => void | (() => void)): void
   register(options: Record<string, unknown>, component: unknown): () => void
@@ -106,6 +112,7 @@ interface ClientRemoteService {
     catalogCourse(courseId: string): Promise<RemoteCatalogCourseResult>
     knowledgePoint(knowledgePointId: string): Promise<RemoteKnowledgePointResult>
     reportProgress(knowledgePointId: string, watchedSec: number, completed: boolean): Promise<RemoteProgressResult>
+    setLearnerContext(sessionId: string, update: LearnerContextUpdate): Promise<RemoteLearnerContextResult>
     signOut(): Promise<RemoteSignOutResult>
   }
 }

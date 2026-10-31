@@ -10,12 +10,16 @@ import type {
   CatalogCourseSummary,
   DeviceAuthStart,
   KnowledgePointDetail,
+  LearnerContextUpdate,
   PlaybackSession,
   ProgressResult,
   SearchResult,
   Segment,
 } from '../shared/contracts.js'
 import { CatalogPanel } from './catalog.js'
+import { LearnerContextBridge } from './context-bridge.js'
+import { learnerContextStore } from './learner-context.js'
+import { installSelectionDetector } from './selection.js'
 import type {
   RemoteAuthStatusResult,
   RemoteCatalogCourseResult,
@@ -24,6 +28,7 @@ import type {
   RemoteDeviceAuthStartResult,
   RemoteEventsConsentResult,
   RemoteKnowledgePointResult,
+  RemoteLearnerContextResult,
   RemotePlaybackResult,
   RemoteProgressResult,
   RemoteReportResult,
@@ -154,6 +159,25 @@ const progressSchema = z.object({
   watchedSec: z.number(),
   completed: z.boolean(),
   updatedAt: z.number(),
+})
+
+const learnerContextUpdateSchema = z.object({
+  revision: z.number().int().nonnegative(),
+  enabled: z.boolean(),
+  courseId: z.string().optional(),
+  courseTitle: z.string().optional(),
+  chapterId: z.string().optional(),
+  chapterTitle: z.string().optional(),
+  knowledgePointId: z.string().optional(),
+  knowledgePointTitle: z.string().optional(),
+  positionSec: z.number().int().min(0).max(86400).optional(),
+  selectedText: z.string().optional(),
+})
+
+const learnerContextAckSchema = z.object({
+  revision: z.number(),
+  applied: z.boolean(),
+  truncated: z.boolean(),
 })
 
 const codec = (typeSymbol: string, create: () => z.ZodType) => ({
@@ -292,6 +316,30 @@ const spec: TypertRemoteSpec = {
       cancellation: { parameter: 'signal' },
       result: codec('dsh-plugin-trend-coach#trendCoach/reportProgress:result', () => progressSchema),
     },
+    'trendCoach/setLearnerContext': {
+      service: 'trendCoach',
+      invocation: { kind: 'direct' },
+      parameters: [
+        {
+          name: 'sessionId',
+          wire: 'sessionId',
+          source: 'json',
+          codec: codec('dsh-plugin-trend-coach#trendCoach/setLearnerContext:sessionId', () => z.string()),
+          strictCodec: codec('dsh-plugin-trend-coach#trendCoach/setLearnerContext:sessionId', () => z.string()),
+        },
+        {
+          name: 'update',
+          wire: 'update',
+          source: 'json',
+          codec: codec('dsh-plugin-trend-coach#trendCoach/setLearnerContext:update', () => learnerContextUpdateSchema),
+          strictCodec: codec('dsh-plugin-trend-coach#trendCoach/setLearnerContext:update', () => learnerContextUpdateSchema),
+        },
+      ],
+      result: codec(
+        'dsh-plugin-trend-coach#trendCoach/setLearnerContext:result',
+        () => learnerContextAckSchema,
+      ),
+    },
     'trendCoach/authStatus': {
       service: 'trendCoach',
       invocation: { kind: 'direct' },
@@ -405,6 +453,7 @@ interface TrendCoachRemote {
     watchedSec: number,
     completed: boolean,
   ): Promise<RemoteProgressResult>
+  setLearnerContext(sessionId: string, update: LearnerContextUpdate): Promise<RemoteLearnerContextResult>
   authStatus(): Promise<RemoteAuthStatusResult>
   beginDeviceAuth(): Promise<RemoteDeviceAuthStartResult>
   pollDeviceAuth(): Promise<RemoteDeviceAuthPollResult>
@@ -417,7 +466,12 @@ interface TrendCoachRemote {
 
 interface PlayerParams {
   segmentId?: string
+  courseId?: string
+  courseTitle?: string
+  chapterId?: string
+  chapterTitle?: string
   knowledgePointId?: string
+  knowledgePointTitle?: string
   title?: string
   startSec?: number
   endSec?: number
@@ -679,7 +733,12 @@ function Panel({
               void reportCitationClick(segment.segmentId)
               void openSegment({
                 segmentId: segment.segmentId,
+                courseId: segment.courseId,
+                courseTitle: segment.courseTitle,
+                chapterId: segment.chapterId,
+                chapterTitle: segment.chapterTitle,
                 knowledgePointId: segment.knowledgePointId,
+                knowledgePointTitle: segment.knowledgePointTitle,
                 title: segment.title,
                 startSec: segment.startSec,
                 endSec: segment.endSec,
@@ -841,6 +900,35 @@ function Player({ useTabInfo, reportPlayerStarted, reportProgress }: PlayerProps
     : Math.min(endSec ?? startSec + SEGMENT_CLIP_SEC, startSec + SEGMENT_CLIP_SEC)
   const progressKey = `${knowledgePointId ?? ''}#${revision}#${src ?? ''}`
 
+  const segmentId = params.segmentId
+  const scene = React.useMemo(() => (
+    segmentId === undefined || params.courseId === undefined
+      ? undefined
+      : {
+        courseId: params.courseId,
+        ...(params.courseTitle === undefined ? {} : { courseTitle: params.courseTitle }),
+        ...(params.chapterId === undefined ? {} : { chapterId: params.chapterId }),
+        ...(params.chapterTitle === undefined ? {} : { chapterTitle: params.chapterTitle }),
+        ...(knowledgePointId === undefined ? {} : { knowledgePointId }),
+        ...(params.knowledgePointTitle === undefined ? {} : { knowledgePointTitle: params.knowledgePointTitle }),
+        segmentId,
+      }
+  ), [
+    segmentId,
+    params.courseId,
+    params.courseTitle,
+    params.chapterId,
+    params.chapterTitle,
+    params.knowledgePointTitle,
+    knowledgePointId,
+  ])
+
+  // 打开播放器本身就是一次有意的导航；播放位置只在当前场景仍是该片段时更新。
+  const activateScene = React.useCallback((positionSec?: number) => {
+    if (scene === undefined) return
+    learnerContextStore.setScene(positionSec === undefined ? scene : { ...scene, positionSec })
+  }, [scene])
+
   // 进度是业务写入，失败不影响播放；30 秒节流，暂停/结束/片段播完时强制上报。
   const flushProgress = React.useCallback((completed: boolean, force = false) => {
     if (knowledgePointId === undefined) return
@@ -936,6 +1024,7 @@ function Player({ useTabInfo, reportPlayerStarted, reportProgress }: PlayerProps
       if (delta < 2) watchedRef.current += delta
     }
     setCurrent(now)
+    if (segmentId !== undefined) learnerContextStore.updatePosition(segmentId, now)
     if (!video.paused && watchedRef.current - reportedSecRef.current >= 30) {
       flushProgress(false)
     }
@@ -950,13 +1039,33 @@ function Player({ useTabInfo, reportPlayerStarted, reportProgress }: PlayerProps
     setReady(true)
     const value = event.currentTarget.duration
     if (Number.isFinite(value) && value > 0) setDuration(value)
+    activateScene(startSec ?? event.currentTarget.currentTime)
   }
 
   const onPlaying = () => {
+    activateScene(videoRef.current?.currentTime ?? startSec ?? 0)
     const key = `${src ?? ''}#${revision}`
     if (reportedRef.current === key) return
     reportedRef.current = key
     reportPlayerStarted?.(Math.max(0, Date.now() - startedAtRef.current), gestureRef.current)
+  }
+
+  const onSeeking = (event: React.SyntheticEvent<HTMLVideoElement>) => {
+    activateScene(event.currentTarget.currentTime)
+  }
+
+  const onPause = (event: React.SyntheticEvent<HTMLVideoElement>) => {
+    if (segmentId !== undefined) {
+      learnerContextStore.updatePosition(segmentId, event.currentTarget.currentTime)
+    }
+    flushProgress(false, true)
+  }
+
+  const onEnded = (event: React.SyntheticEvent<HTMLVideoElement>) => {
+    if (segmentId !== undefined) {
+      learnerContextStore.updatePosition(segmentId, event.currentTarget.currentTime)
+    }
+    flushProgress(true, true)
   }
 
   const range = startSec !== undefined && endSec !== undefined
@@ -1038,9 +1147,10 @@ function Player({ useTabInfo, reportPlayerStarted, reportProgress }: PlayerProps
         onLoadedMetadata: onMetadata,
         onDurationChange: onMetadata,
         onPlaying,
+        onSeeking,
         onTimeUpdate,
-        onPause: () => flushProgress(false, true),
-        onEnded: () => flushProgress(true, true),
+        onPause,
+        onEnded,
         onError: () => setMediaError('视频加载失败'),
       }),
       React.createElement('div', { style: watermarkStyle }, `${watermark} · ${Math.floor(current)}s`),
@@ -1122,13 +1232,13 @@ export function apply(ctx: Context): void {
     knowledgePointId: string,
     title: string,
   ): Promise<void> => {
-    await openSegmentById(remote, segmentId, { knowledgePointId, title })
+    await openSegmentById(remote, segmentId, { knowledgePointId, knowledgePointTitle: title, title })
   }
 
   const openSegmentById = async (
     remote: TrendCoachRemote,
     segmentId: string,
-    extra: { knowledgePointId?: string; title?: string },
+    extra: { knowledgePointId?: string; knowledgePointTitle?: string; title?: string },
   ): Promise<void> => {
     const result = await remote.getSegment(segmentId)
     if (!result.ok) {
@@ -1139,7 +1249,12 @@ export function apply(ctx: Context): void {
     const segment = result.value
     await openSegment(remote, {
       segmentId: segment.segmentId,
+      courseId: segment.courseId,
+      courseTitle: segment.courseTitle,
+      chapterId: segment.chapterId,
+      chapterTitle: segment.chapterTitle,
       knowledgePointId: extra.knowledgePointId ?? segment.knowledgePointId,
+      knowledgePointTitle: extra.knowledgePointTitle ?? segment.knowledgePointTitle,
       title: extra.title ?? segment.title,
       startSec: segment.startSec,
       endSec: segment.endSec,
@@ -1229,6 +1344,14 @@ export function apply(ctx: Context): void {
           document.addEventListener('click', onClick, true)
           return () => document.removeEventListener('click', onClick, true)
         }, 'trend-coach citation links')
+
+        scoped.slots.inject('conversation.input.left', () => scoped.slots.register(
+          { name: 'conversation.input.left', id: 'trend-coach-context', order: 100, label: '课程上下文' },
+          (props: { sessionId: string }) => React.createElement(LearnerContextBridge, {
+            sessionId: props.sessionId,
+            remote: scoped.remote.trendCoach,
+          }),
+        ))
       })
     }).catch((error: unknown) => {
       console.error('[trend-coach] remote mount failed', error)
@@ -1238,6 +1361,8 @@ export function apply(ctx: Context): void {
       await dispose()
     }
   }, 'trend-coach remote mount')
+
+  ctx.effect(() => installSelectionDetector(), 'trend-coach selection')
 
   ctx.effect(() => ctx.sidebarRightTabs.register({
     id: TAB_ID,
