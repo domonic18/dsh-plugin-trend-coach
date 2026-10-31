@@ -43,6 +43,9 @@ interface Segment {
   chapterId: string
   knowledgePointId: string
   title: string
+  courseTitle?: string
+  chapterTitle?: string
+  knowledgePointTitle?: string
   startSec: number
   endSec: number
   text: string
@@ -86,6 +89,9 @@ const outputSchema = {
           chapterId: { type: 'string', required: true },
           knowledgePointId: { type: 'string', required: true },
           title: { type: 'string', required: true },
+          courseTitle: { type: 'string' },
+          chapterTitle: { type: 'string' },
+          knowledgePointTitle: { type: 'string' },
           startSec: { type: 'number', required: true },
           endSec: { type: 'number', required: true },
           text: { type: 'string', required: true },
@@ -127,7 +133,7 @@ function renderResult(_args: unknown, value: SearchResult): Array<{ type: 'text'
   for (const segment of value.segments) {
     lines.push(
       `[${segment.segmentId}] ${segment.title}`,
-      `课程 ${segment.courseId} / 章节 ${segment.chapterId} / 知识点 ${segment.knowledgePointId}`,
+      `课程 ${segment.courseTitle ?? segment.courseId} / 章节 ${segment.chapterTitle ?? segment.chapterId} / 知识点 ${segment.knowledgePointTitle ?? segment.knowledgePointId}`,
       `视频位置 ${segment.startSec}s - ${segment.endSec}s (相关度 ${segment.score.toFixed(3)})`,
       `引用链接(原样整段复制到回答里,不要改写):[${segment.title}](${citationUrl(segment)})`,
       segment.text,
@@ -155,6 +161,11 @@ function isRelatedKnowledgePoint(value: unknown): value is RelatedKnowledgePoint
   )
 }
 
+function isOptionalTitle(value: unknown): boolean {
+  return value === undefined
+    || (typeof value === 'string' && value.length > 0 && value.length <= MAX_TITLE_LENGTH)
+}
+
 function isSegment(value: unknown): value is Segment {
   if (typeof value !== 'object' || value === null) return false
   const candidate = value as Record<string, unknown>
@@ -169,7 +180,10 @@ function isSegment(value: unknown): value is Segment {
     typeof candidate.endSec === 'number' && Number.isFinite(candidate.endSec) && candidate.endSec >= candidate.startSec &&
     typeof candidate.text === 'string' && candidate.text.length <= MAX_SEGMENT_TEXT &&
     typeof candidate.score === 'number' && Number.isFinite(candidate.score)
-      && candidate.score >= 0 && candidate.score <= 1
+      && candidate.score >= 0 && candidate.score <= 1 &&
+    isOptionalTitle(candidate.courseTitle) &&
+    isOptionalTitle(candidate.chapterTitle) &&
+    isOptionalTitle(candidate.knowledgePointTitle)
   )
 }
 

@@ -6,6 +6,9 @@ export interface SearchSegment {
   chapterId: string
   knowledgePointId: string
   title: string
+  courseTitle?: string
+  chapterTitle?: string
+  knowledgePointTitle?: string
   startSec: number
   endSec: number
   text: string

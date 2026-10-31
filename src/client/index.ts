@@ -37,6 +37,9 @@ const segmentSchema = z.object({
   chapterId: z.string(),
   knowledgePointId: z.string(),
   title: z.string(),
+  courseTitle: z.string().optional(),
+  chapterTitle: z.string().optional(),
+  knowledgePointTitle: z.string().optional(),
   startSec: z.number(),
   endSec: z.number(),
   text: z.string(),
@@ -223,8 +226,8 @@ interface PlayerProps {
   useTabInfo?: TabInfoHook
 }
 
-function formatSegment(segment: SearchSegment): string {
-  return `[${segment.segmentId}] ${segment.title} · ${segment.startSec}s-${segment.endSec}s · 相关度 ${segment.score.toFixed(3)}`
+function displayTitle(title: string | undefined, id: string): string {
+  return title === undefined || title.length === 0 ? id : title
 }
 
 function Panel({
@@ -389,7 +392,15 @@ function Panel({
               cursor: 'pointer',
               font: 'inherit',
             },
-          }, formatSegment(segment)),
+          },
+          React.createElement('div', null, `[${segment.segmentId}] ${segment.title}`),
+          React.createElement('div', { style: { color: '#666', fontSize: 12 } },
+            `${displayTitle(segment.courseTitle, segment.courseId)} / `
+            + `${displayTitle(segment.chapterTitle, segment.chapterId)} / `
+            + `${displayTitle(segment.knowledgePointTitle, segment.knowledgePointId)}`
+            + ` · ${segment.startSec}s-${segment.endSec}s · 相关度 ${segment.score.toFixed(3)}`,
+          ),
+        ),
         ),
       )
     }
