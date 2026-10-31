@@ -93,6 +93,8 @@
 | 设备码授权闭环 | Host 发起设备码，面板展示 `userCode` / `verificationUri` 并轮询；批准后轮询返回 grant 并写入 dsh credentials；重启 dsh 后仍显示已授权 |
 | 令牌过期自动刷新 | 服务端吊销 access token 后，下一次检索触发 401 → 用 refresh token 轮换 → 重试成功；旧 refresh token 复用被拒（401） |
 | 设备绑定与退出 | 授权与业务请求绑定 `deviceId`，`x-device-id` 不匹配返回 403；退出登录删除本地 grant，后续检索提示未授权 |
+| 未覆盖问题兜底 | 无召回时返回 `relatedKnowledgePoints`（仅标题），工具渲染与右栏面板均列出；回答明确「课程未覆盖」，不生成引用或时间点 |
+| 片段区间高亮 | 播放器展示 `[startSec, endSec]` 高亮条与当前位置标记；seek 到起播秒、播至 `min(endSec, start+60)` 自动暂停 |
 
 **平台硬约束（实现必须遵守）**
 
