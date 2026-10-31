@@ -10,6 +10,8 @@ await build({
   platform: 'browser',
   target: 'es2022',
   sourcemap: false,
+  minify: true,
+  legalComments: 'eof',
   external: [
     'react',
     'react/jsx-runtime',
