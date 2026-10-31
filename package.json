@@ -28,6 +28,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test test/*.test.mjs",
     "test:only": "node --test test/*.test.mjs",
+    "smoke": "npm run build && node scripts/smoke-install.mjs",
     "mock": "node spike/build-hls.mjs && node spike/mock-kb-server.mjs",
     "mock:rebuild": "node spike/build-hls.mjs --force"
   },
