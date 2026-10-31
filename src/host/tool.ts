@@ -6,6 +6,7 @@ import type { SearchResult, Segment } from '../shared/contracts.js'
 import { sanitizeUntrusted, wrapUntrusted } from '../untrusted.js'
 import { searchKnowledge } from './cloud-client.js'
 import type { EventReporter } from './events.js'
+import type { CourseSessionTracker } from './feedback.js'
 
 const outputSchema = {
   type: 'object',
@@ -94,7 +95,12 @@ function renderResult(_args: unknown, value: SearchResult): Array<{ type: 'text'
   return [{ type: 'text', text: lines.join('\n') }]
 }
 
-export function registerSearchTool(ctx: Context, auth: AuthManager, events: EventReporter): void {
+export function registerSearchTool(
+  ctx: Context,
+  auth: AuthManager,
+  events: EventReporter,
+  tracker: CourseSessionTracker,
+): void {
   ctx.tools.register(
     defineTool({
       name: 'trend_coach_search',
@@ -121,6 +127,7 @@ export function registerSearchTool(ctx: Context, auth: AuthManager, events: Even
         const startedAt = Date.now()
         try {
           const result = await searchKnowledge(auth, query, topK ?? 5, courseId, exec.signal)
+          tracker.mark((exec.agent as { sessionId?: string } | undefined)?.sessionId)
           events.reportSearch(Date.now() - startedAt, normalizeTopK(topK ?? 5), result.segments.length)
           return result
         } catch (error) {

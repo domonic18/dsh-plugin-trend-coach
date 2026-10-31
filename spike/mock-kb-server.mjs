@@ -157,6 +157,7 @@ const EVENT_FIELDS = {
   search_requested: ['durationMs', 'topK', 'hits', 'empty'],
   citation_clicked: ['segmentId'],
   player_started: ['startupMs', 'autoplayBlocked'],
+  feedback_submitted: ['rating'],
 }
 
 function isInt(value, min, max) {
@@ -183,6 +184,8 @@ function validateEvent(payload) {
     case 'player_started':
       return isInt(props.startupMs, 0, 60_000) && typeof props.autoplayBlocked === 'boolean'
         ? undefined : 'props invalid'
+    case 'feedback_submitted':
+      return props.rating === 'up' || props.rating === 'down' ? undefined : 'props invalid'
     default:
       return 'event name not allowed'
   }

@@ -11,7 +11,7 @@ const NO_SIGNAL = new AbortController().signal
 const MAX_DURATION_MS = 60_000
 const MAX_HITS = 20
 
-type EventName = 'search_requested' | 'citation_clicked' | 'player_started'
+type EventName = 'search_requested' | 'citation_clicked' | 'player_started' | 'feedback_submitted'
 
 function clamp(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min
@@ -72,6 +72,10 @@ export class EventReporter {
       startupMs: clamp(startupMs, 0, MAX_DURATION_MS),
       autoplayBlocked: autoplayBlocked === true,
     })
+  }
+
+  reportFeedback(rating: 'up' | 'down'): void {
+    this.report('feedback_submitted', { rating })
   }
 
   private async readConsent(response: Response): Promise<boolean> {

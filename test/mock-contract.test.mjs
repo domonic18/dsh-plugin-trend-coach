@@ -276,10 +276,18 @@ test('mock 云端接口满足对接清单', async (t) => {
     })
     assert.equal(duplicate.status, 202)
 
+    const feedback = await api('/v1/events', {
+      method: 'POST',
+      body: { eventId: 'evt-mock-contract-feedback-0001', name: 'feedback_submitted', props: { rating: 'up' } },
+      token: grant.accessToken,
+    })
+    assert.equal(feedback.status, 202)
+
     const invalidEvents = [
       { ...event, eventId: 'evt-mock-contract-0002', name: 'answer_generated', props: {} },
       { ...event, eventId: 'evt-mock-contract-0003', props: { ...event.props, query: '趋势' } },
       { eventId: 'evt-mock-contract-0004', name: 'citation_clicked', props: { segmentId: 'bad' } },
+      { eventId: 'evt-mock-contract-0005', name: 'feedback_submitted', props: { rating: 'neutral' } },
     ]
     for (const payload of invalidEvents) {
       const invalid = await api('/v1/events', {
