@@ -1,6 +1,6 @@
-# 趋势伴学插件 · 项目规范（v1.3）
+# 趋势伴学插件 · 项目规范（v1.4）
 
-- 状态：v1.3，依据 dsh 0.2.1-rc.5 官方插件实现、M0 实测结论与插件管理器/市场源码调研；新增学习上下文（`systemPrompt.section`）、选中文本隐私与 composer slot 注册规范
+- 状态：v1.4，依据 dsh 0.2.1-rc.5 官方插件实现、M0 实测结论与插件管理器/市场源码调研；新增 M4.2 语音录音、WAV 重采样、音频隐私与插入待确认规范
 - 日期：2026-11-01
 - 适用范围：本仓库全部代码、配置、文档与提交
 - 关联文档：[架构设计](../architecture/architecture-design.md)、[产品需求](../requirements/product-requirements.md)
@@ -114,6 +114,9 @@ cordis.patch.yml      bundle patch（随包发布）
 - **必须**：调用结果按 `{ ok, value } | { ok, error }` 处理，不假设一定成功；错误码稳定可读。
 - **应当**：服务 key 用小驼峰（`trendCoach`）；方法名用动词（`search`、`getSegment`）。
 - **应当**：跨端类型放在共享声明中；客户端不直接 import Host 模块。
+- **必须**：`transcribeVoice(audioBase64, durationMs, signal)` 的入参在 Host 边界重新校验（base64 字符集与长度、WAV 头、16kHz/单声道/16bit、时长），不信任客户端；校验失败映射 `bad-request`。
+- **必须**：语音请求使用独立超时 `voiceTimeoutMs`（默认 40s，需大于云端 `ASR_TIMEOUT_MS`），不改变其它方法的 10s 默认。
+- **必须**：语音方法日志只记操作名、耗时与错误类型，不记 base64、转写正文或完整 deviceId。
 
 ---
 
@@ -130,6 +133,10 @@ cordis.patch.yml      bundle patch（随包发布）
 - **必须**：`conversation.input.left` 等未声明自定义 `InjectFace` 的 slot 不得通过 `inject` 传自定义 props；用注册闭包包装组件（`props => React.createElement(Bridge, { ...props, remote })`），标准 props（含 `sessionId`）原样透传。
 - **必须**：会话作用域数据（学习场景发布）由 composer slot 内的桥接组件负责；体系页/播放器只写全局 store，不自行猜测 `sessionId`。
 - **应当**：`InputActions` 没有 `focus()`；聚焦输入框只能走 DOM 兜底（优先上次 `focusin` 记录的 `[data-composer-input]`，否则选唯一可见编辑器），失败不报错、不阻断上下文携带。
+- **必须**：语音入口注册在 `conversation.input.right`（`id: 'trend-coach-voice'`），用标准 props + 注册闭包，不新增 dsh 依赖或自定义 `InjectFace`。
+- **必须**：录音只走 `navigator.mediaDevices.getUserMedia` + `MediaRecorder`，停止后在浏览器内 `decodeAudioData` + `OfflineAudioContext(1, n, 16000)` 重采样并编码 PCM16 WAV；禁止引入 ffmpeg、系统命令或第三方录音/转码 SDK，禁止上传 webm。
+- **必须**：转写文本只插入 composer（`captureInsertion` / `insertText`），**不得调用 `submit()` 自动发送**；插入失败保留 pending 并显示「插入转写」，不得静默丢弃。
+- **必须**：录音状态为模块级单例（同时只允许一个 composer 录音）；组件卸载/会话切换时停止录音、释放 `MediaStream` tracks、清 pending。
 - **应当**：组件不直接 fetch 云端；所有数据经 Remote。
 - **应当**：UI 文案用中文；代码标识符用英文；面向学员的错误文案不暴露内部错误码。
 - **建议**：UI 规模扩大后迁移到 CSS Modules + `--dsw-*` token + `@deepseek-ai/dsh-client-ui-primitives`；当前内联样式为阶段性方案。
@@ -155,6 +162,9 @@ cordis.patch.yml      bundle patch（随包发布）
 - **必须**：引用定位只信 `getSegment` 的起止秒；URL/模型输出里的 `t/e` 一律忽略。
 - **必须**：指标上报只走云端鉴权事件接口，字段按白名单最小化（不含 query 原文、回答内容、播放地址），且需用户同意、可撤回；禁止接入第三方分析 SDK。
 - **应当**：空召回与相邻知识点分别建模：`segments` 为空时返回 `relatedKnowledgePoints`（仅标题），不与“服务故障”混用。
+- **必须**：语音转写 `POST /v1/asr/transcribe` 只接受 `{ audio, format: 'wav', durationMs }`，路由级请求体上限 3MiB；`audio` 解码后 ≤1,920,044B，WAV 必须为 PCM/单声道/16000Hz/16bit，时长 1–60,000ms → `400`。
+- **必须**：转写文本清洗后 1–2000 字符；空结果返回 `422`「未识别到语音」，不返回空串；按设备限流（默认 20 次/分钟），不自动重试上游。
+- **必须**：云端上游（MiniMax）错误映射为受控状态：`429` 透传限流语义、`5xx`/超时 → `503`、协议异常 → `502`；不把上游 `status_msg` 原样透传给客户端。
 
 ---
 
@@ -171,6 +181,9 @@ cordis.patch.yml      bundle patch（随包发布）
 - **必须**：TTS 等本地能力优先使用浏览器标准 API（如 Web Speech API），不得调用 `say`/SAPI 等系统命令或注册 shell 工具。
 - **必须**：学习上下文（课程/章节/知识点/播放位置/选中文本）只在本机 Host 内存中处理：不上云、不落盘、不落日志、不进入指标；Host store 需限会话数（≤64）与 TTL（30min），退出登录时清空。
 - **必须**：选中文本按不可信数据处理：原始 ≤4000 字符、清洗控制字符后按码点截断到 500；包裹在固定 `<learner_selected_text>` 边界内并转义伪造边界；在提示中声明不可执行。默认开启、可随时关闭，关闭后渲染为空。
+- **必须**：语音音频与转写文本只在内存中流转：不落盘、不写入插件自有文件、不落日志、不进入指标；Host 与云端只回受控文本，日志只记操作名/错误类别，不记 base64、正文或完整 deviceId。
+- **必须**：ASR 密钥只存在于云端环境变量（`ASR_API_KEY`），不得进入插件、客户端 bundle、mock 或仓库；示例文件只写占位符。
+- **必须**：麦克风只在学员点击后开启，不后台录音；录音状态单例，页面/组件卸载即停止并释放 tracks。
 - **应当**：不接入第三方行为分析/广告 SDK；任何指标采集需先有 PRD 字段定义与用户同意路径。
 
 ---
@@ -205,7 +218,7 @@ cordis.patch.yml      bundle patch（随包发布）
 
 1. `npm run typecheck`
 2. `npm run build`
-3. `npm test`：Host 边界、不可信文本、mock 云端契约与发布包清单
+3. `npm test`：Host 边界、不可信文本、WAV 校验/编码/转写映射、mock 云端契约与发布包清单
 4. `npm run mock` + 插件在 dsh 中冒烟（Remote 挂载、检索、引用定位）
 5. 涉及打包/依赖/manifest 时：`npm pack` 后在全新 profile 安装验证
 
@@ -244,8 +257,11 @@ cordis.patch.yml      bundle patch（随包发布）
 - ❌ 接入第三方分析 SDK 或未经同意上报行为数据
 - ❌ 用 `systemPrompt.context()` 注入学习场景（会写聊天历史）
 - ❌ 把学习上下文/选中文本上传云端、写入磁盘、日志或指标
-- ❌ 通过 `inject` 向未声明 `InjectFace` 的 slot（如 `conversation.input.left`）传自定义 props
+- ❌ 通过 `inject` 向未声明 `InjectFace` 的 slot（如 `conversation.input.left`、`conversation.input.right`）传自定义 props
 - ❌ 在体系页/播放器里猜测或伪造 `sessionId` 发布上下文
+- ❌ 引入 ffmpeg、系统命令或第三方录音/转码 SDK；上传 webm 或未重采样的音频
+- ❌ 语音转写后自动发送（调用 `inputActions.submit()`）
+- ❌ 把音频 base64、转写正文、ASR 密钥写入日志、磁盘、指标或客户端 bundle
 
 ---
 
@@ -268,5 +284,7 @@ cordis.patch.yml      bundle patch（随包发布）
 | 播放与 TTS 现状 | dsh 客户端包内无 HLS 播放器与 TTS 服务；HLS 需自备 hls.js，TTS 用 Web Speech API |
 | systemPrompt section | `@deepseek-ai/dsh-system-prompt` `lib/types/index.d.ts`（`PromptSection`；`context()` 生成持久快照、`section()` 为临时段） |
 | 会话/agent 上下文 | `@deepseek-ai/dsh-agent` `lib/types/runtime-types.d.ts`（`AssembleContext.agent?: Agent`）、`lib/types/types.d.ts`（`Agent.id: SessionId`） |
-| composer slot | `@deepseek-ai/dsh-client-ui-conversation` `lib/types/client/contract/slots.d.ts`、`contract/input.d.ts`（无自定义 InjectFace；`InputActions` 无 `focus()`；编辑器标记 `data-composer-input`） |
+| composer slot | `@deepseek-ai/dsh-client-ui-conversation` `lib/types/client/contract/slots.d.ts`、`contract/input.d.ts`（`conversation.input.right` 为 session 作用域 list slot；无自定义 InjectFace；`InputActions.captureInsertion/insertText` 且无 `focus()`；编辑器标记 `data-composer-input`） |
+| 官方语音包上限 | dsh 语音相关 bundle 默认 `maxAudioBytes = 4MiB`、`maxDurationSeconds = 120`，可作 Remote 大 payload 的量级参照；插件不依赖该包 |
+| MiniMax ASR | `POST {base}/v1/speech_to_text`（Bearer；multipart `file` + `model` + `response_format`；响应 `text`；业务错误为 HTTP 200 + `base_resp.status_code != 0`；不支持 webm） |
 | 产品分析边界 | `@deepseek-ai/dsh-client-product-analytics` 仅桌面端，第三方插件标识不构成分析维度 |

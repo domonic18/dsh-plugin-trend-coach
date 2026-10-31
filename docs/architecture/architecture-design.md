@@ -1,10 +1,10 @@
-# 趋势伴学插件 · 架构设计（v1.5）
+# 趋势伴学插件 · 架构设计（v1.6）
 
-- 状态：v1.5，基于 PRD v1.5 与 dsh 0.2.1-rc.5 实测/源码调研结论；新增 M4.1 学习场景上下文（`systemPrompt.section` + composer 桥接 + 全局选中）
+- 状态：v1.6，基于 PRD v1.6 与 dsh 0.2.1-rc.5 实测/源码调研结论；新增 M4.2 语音提问（composer 麦克风 + 浏览器 WAV 重采样 + 云端 MiniMax ASR）
 - 日期：2026-11-01
 - 上游文档：[产品需求文档](../requirements/product-requirements.md)
 - 配套规范：[项目规范](../conventions/project-conventions.md)
-- 版本变更：v1.5 新增 M4.1 学习场景即时提问（文字/图片 + 自动上下文 + 选中文本）：Remote `setLearnerContext`、Host 内存 store、`systemPrompt.section` 动态注入、composer 桥接与全局选中检测；v1.4 落地退出并注销（`POST /v1/auth/revoke`）、面板跨挂载状态保留、`npm run smoke` 与 CI，并记录 S9 真实云端联调结果；v1.3 落地指标事件同意与上报（`GET/PUT /v1/events/consent` + 三类白名单事件），并记录 S8 真实云端联调结果；v1.2 落地播放会话契约（`POST /v1/playback/sessions`）、媒体 CORS 要求、引用时间点只信 `getSegment`、hls.js 优先于 `canPlayType` 的选择顺序，并记录 S1 端到端验证结果；v1.1 补齐播放语义、HLS 方案、鉴权分期、水印、TTS、指标、显示字段/相邻知识点、`engines.dsh` 与 §17/§18。
+- 版本变更：v1.6 新增 M4.2 语音提问：`conversation.input.right` 麦克风、浏览器录音与 16kHz 单声道 PCM16 WAV 编码、Remote `transcribeVoice`、云端 `POST /v1/asr/transcribe` 转发 MiniMax、插入 composer 不自动发送、60s 上限与失败降级；v1.5 新增 M4.1 学习场景即时提问（文字/图片 + 自动上下文 + 选中文本）：Remote `setLearnerContext`、Host 内存 store、`systemPrompt.section` 动态注入、composer 桥接与全局选中检测；v1.4 落地退出并注销（`POST /v1/auth/revoke`）、面板跨挂载状态保留、`npm run smoke` 与 CI，并记录 S9 真实云端联调结果；v1.3 落地指标事件同意与上报（`GET/PUT /v1/events/consent` + 三类白名单事件），并记录 S8 真实云端联调结果；v1.2 落地播放会话契约（`POST /v1/playback/sessions`）、媒体 CORS 要求、引用时间点只信 `getSegment`、hls.js 优先于 `canPlayType` 的选择顺序，并记录 S1 端到端验证结果；v1.1 补齐播放语义、HLS 方案、鉴权分期、水印、TTS、指标、显示字段/相邻知识点、`engines.dsh` 与 §17/§18。
 
 ---
 
@@ -98,6 +98,7 @@ apply(ctx, config)                                  // 静态 inject: ['tools', 
 │   ├── @Remote search / getSegment / createPlaybackSession
 │   ├── @Remote authStatus / beginDeviceAuth / pollDeviceAuth / signOut
 │   ├── @Remote setLearnerContext（校验 → store.set）
+│   ├── @Remote transcribeVoice（WAV 校验 → 云端 ASR）            // M4.2
 │   └── src/host/cloud-client.ts：云端 HTTP + 响应结构校验
 └── registerSearchTool(ctx, auth)                   // src/host/tool.ts
     ├── parameters: query / courseId? / topK?
@@ -113,6 +114,7 @@ apply(ctx, config)                                  // 静态 inject: ['tools', 
 | `baseUrl` | `TREND_COACH_BASE_URL` 或 `http://127.0.0.1:3939` | 仅 http/https；禁止账号密码、查询串、锚点；末尾斜杠规范化 |
 | `apiTokenRef` | `TREND_COACH_API_TOKEN`（credential-ref） | 仅内部 token 回退 |
 | `timeoutMs` | `10000` | 正数 |
+| `voiceTimeoutMs` | `40000` | 正数；须大于云端 `ASR_TIMEOUT_MS`，让云端先返回可读的 503/502 |
 | `logLevel` | `warn`（`TREND_COACH_LOG_LEVEL` 可覆盖） | `silent/error/warn/info/debug` |
 
 `cordis.patch.yml` 不再写死 `baseUrl`，安装后可用环境变量或 profile 配置切换 staging/production。配置校验失败会阻止插件激活，避免用错误地址静默请求。
@@ -136,9 +138,10 @@ apply(ctx, config)                                  // 静态 inject: ['tools', 
 | `src/host/tool.ts` | `trend_coach_search` 定义、渲染与工具错误映射 |
 | `src/host/service.ts` | Typert Remote 服务与统一失败日志 |
 | `src/host/learner-context.ts` | 学习上下文内存 store、模板渲染、`systemPrompt.section` 注册 |
+| `src/host/voice-audio.ts` | M4.2：base64 与 WAV 结构/采样率/声道/位深/时长校验 |
 | `src/shared/contracts.ts` | Host/Client 共用领域类型与长度上限 |
 
-Client 仍为单文件入口；M4.1 新增纯函数与 UI 模块（`context-model.ts` / `learner-context.ts` / `context-bridge.ts` / `selection.ts`），出现第 3 个页面型 tab 时再把面板/播放器拆为独立文件。
+Client 仍为单文件入口；M4.1 新增纯函数与 UI 模块（`context-model.ts` / `learner-context.ts` / `context-bridge.ts` / `selection.ts`），M4.2 新增 `client/voice/*` 与 `composer-focus.ts`，出现第 3 个页面型 tab 时再把面板/播放器拆为独立文件。
 
 ### 4.2 Browser 半
 
@@ -150,6 +153,7 @@ apply(ctx)
 │   └── 成功后 ctx.inject(['remote.trendCoach'], scoped => …)
 │       ├── scoped.slots.inject('sidebar.right.pane.tab', Panel)
 │       ├── scoped.slots.inject('conversation.input.left', 课程上下文桥接)   // M4.1
+│       ├── scoped.slots.inject('conversation.input.right', 语音按钮)        // M4.2
 │       └── scoped.effect(document capture click handler)
 ├── ctx.effect(sidebarRightTabs.register(检索 tab, guide: [ ... ]))
 ├── ctx.effect(sidebarRightTabs.register(播放器 tab, guide: [ ... ]))
@@ -169,6 +173,11 @@ apply(ctx)
 | `context-bridge.ts` | `conversation.input.left` occupant（标准 props 含 `sessionId`）；订阅全局 store → `setLearnerContext`；渲染「课程上下文 · 已开/已关」与选中文本 chip |
 | `selection.ts` | 全局 `selectionchange`/`pointerup`/`scroll`/`resize` 监听；过滤输入框内选区；悬浮按钮写入 `selectedText` 并尽力聚焦 composer |
 | `context-model.ts` | 纯函数：15s 位置桶、`mm:ss` 格式化、500 码点截断、快照构建与去重键 |
+| `composer-focus.ts` | 从 `selection.ts` 抽出的 `isVisible` + `focusComposer()`；语音插入后复用 |
+| `voice/audio.ts` | 纯函数：`encodeWav`（RIFF/WAVE、PCM16LE、clamp）与分块 `bytesToBase64` |
+| `voice/recorder.ts` | `getUserMedia` + `MediaRecorder`；停止后 `decodeAudioData` → `OfflineAudioContext(1, n, 16000)` → WAV → base64；`cancel()` 只释放麦克风 |
+| `voice/controller.ts` | 模块级单例 store：`idle/starting/recording/processing`（`starting` 表示权限弹窗未决）、录音计时、60s 自动停止、插入/降级 pending、`disposeOwner` |
+| `voice/voice-button.ts` | `conversation.input.right` occupant：麦克风、录音计时、处理中、错误提示、pending「插入转写」 |
 
 **composer slot 注册方式**：`conversation.input.left` 未声明自定义 `InjectFace`，不能通过 `inject` 传 props。使用注册闭包包装组件，标准 props 原样透传：
 
@@ -195,6 +204,7 @@ scoped.slots.inject('conversation.input.left', () => scoped.slots.register(
 | 账号 / 设备码 | 待定 | 契约已定，mock + dsh 已验（S2） |
 | 视频签名 HLS | `POST /v1/playback/sessions` | 契约已定，mock + 浏览器已验（S1） |
 | 学习进度 | `GET /v1/catalog/*` + `PUT /v1/progress/knowledge-points/{id}` | 契约已定，云端 + mock 已验证（M3） |
+| 语音转写 | `POST /v1/asr/transcribe`（转发 MiniMax） | 契约已定，M4.2 实现；真实 MiniMax 待 `ASR_API_KEY` |
 
 ---
 
@@ -287,6 +297,45 @@ sequenceDiagram
 - 多个会话同时挂载 composer 时，各自发布同一份全局 UI 场景；场景不做会话隔离，此行为在文档中明确。
 - 关闭开关后仍保存条目（重新开启立即恢复），但渲染为空；退出登录时 Host 清空全部条目。
 
+### 5.5 语音提问（M4.2）
+
+```mermaid
+sequenceDiagram
+  participant U as 学员
+  participant V as 语音按钮 / controller
+  participant R as recorder / audio
+  participant H as Host TrendCoachService
+  participant C as 云端 /v1/asr/transcribe
+  participant X as MiniMax ASR
+  participant I as composer InputActions
+
+  U->>V: 点击麦克风
+  V->>I: captureInsertion()
+  V->>R: beginRecording() getUserMedia + MediaRecorder
+  U->>V: 再次点击（或 60s 自动停止）
+  V->>R: stop()
+  R->>R: decodeAudioData → 16k 单声道 → PCM16 WAV → base64
+  R-->>V: { audioBase64, durationMs }
+  V->>H: Remote transcribeVoice(audioBase64, durationMs)
+  H->>H: decodeVoiceWav 校验（≤1,920,044B / 16k / mono / 16bit / 时长）
+  H->>C: POST /v1/asr/transcribe（Bearer + x-device-id）
+  C->>C: 鉴权 → 设备限流 → 重新校验 WAV
+  C->>X: POST /v1/speech_to_text（multipart wav）
+  X-->>C: text / base_resp
+  C-->>H: { text, durationMs }
+  H-->>V: { text, durationMs }
+  V->>I: insertText(text, span)
+  V->>V: focusComposer()
+```
+
+**规则**
+
+- 录音状态是模块级单例：任一 composer 处于授权/录音/处理阶段时，其它麦克风按钮禁用，避免多路 `getUserMedia` 抢设备；权限弹窗未决时按钮显示「授权麦克风…」，不冒充「录音中」。
+- `captureInsertion()` 在开始录音时取锚点；转写成功时用该锚点插入。若期间草稿被修改导致插入失败，保留 pending 文本并显示「插入转写」，由学员点击时用新锚点重试。
+- 绝不调用 `inputActions.submit()`：转写只产生草稿，发送由学员决定。
+- 组件卸载或会话切换时 `disposeOwner(ownerId)`：停止 recorder、释放 tracks、清 pending。
+- 音频与转写文本只在内存流转；Host 与云端只记录操作名/错误类型，不记录 base64、正文或完整设备 ID。
+
 ---
 
 ## 6. 接口契约
@@ -348,6 +397,7 @@ sequenceDiagram
 | `trendCoach/pollDeviceAuth` | `signal` | `{status: 'pending'\|'authorized'\|'expired'}` |
 | `trendCoach/signOut` | 无 | `{signedOut: true}`；先尽力调用 `POST /v1/auth/revoke` 吊销本设备令牌，再删除本地 grant，网络失败不阻塞登出 |
 | `trendCoach/setLearnerContext` | `sessionId: string, update: LearnerContextUpdate` | `LearnerContextAck`（M4.1，纯本地，不上云；无 `signal`，与事件上报一致） |
+| `trendCoach/transcribeVoice` | `audioBase64: string, durationMs: number, signal` | `{text, durationMs}`（M4.2，经云端 ASR） |
 
 - 客户端调用返回 `{ ok: true, value } | { ok: false, error }`。
 - spec 的 `package` 必须为 `dsh-plugin-trend-coach`；method wire 名为 `服务名/方法名`；result 使用 strict codec。
@@ -629,6 +679,57 @@ interface LearnerContextAck {
 
 **隐私**：上下文只在本机 Host 内存处理，不上云、不落盘、不落日志、不进入指标；选中文本只进入学员自己的模型请求。
 
+### 6.8 M4.2 语音转写契约
+
+**Remote**：`trendCoach/transcribeVoice(audioBase64, durationMs, signal) → VoiceTranscript { text, durationMs }`，`cancellation: { parameter: 'signal' }`。
+
+**云端端点**
+
+```http
+POST /v1/asr/transcribe
+Authorization: Bearer <device accessToken>
+x-device-id: <deviceId>
+Content-Type: application/json
+
+{ "audio": "<base64 WAV>", "format": "wav", "durationMs": 12000 }
+```
+
+```jsonc
+{ "text": "趋势反转的初步信号是什么？", "durationMs": 12000 }
+```
+
+**音频规格**（Host 与云端各自校验，双边界）
+
+| 项 | 要求 |
+|---|---|
+| 容器 | RIFF/WAVE，含 `fmt ` 与 `data` 块 |
+| 编码 | PCM（`audioFormat=1`） |
+| 声道 | 单声道（1） |
+| 采样率 | 16000 Hz |
+| 位深 | 16 bit |
+| 大小 | 解码后 ≤1,920,044B（60s）；base64 字符 ≤2,560,064 |
+| 时长 | 1–60,000ms；`data` 字节换算时长与 `durationMs` 误差 ≤1s |
+
+**文本**：去控制字符、折叠空白、trim 后 1–2000 字符；空结果 → `422`。
+
+**错误映射**
+
+| HTTP | 含义 | Host/客户端表现 |
+|---|---|---|
+| 400 | 入参或音频非法 | 「录音数据无效，请重试」 |
+| 401/403 | 未授权 / 设备不匹配 | 复用授权失效或设备异常提示 |
+| 413 | 请求过大 | 「录音过长」 |
+| 422 | 未识别到语音 | 「没有听清，请再说一次」 |
+| 429 | 设备限流 | 「操作太频繁，请稍后再试」 |
+| 502 | 上游协议异常 | 「语音服务异常，请重试」 |
+| 503 | 上游不可用 / 未配置 | 「语音服务暂不可用」 |
+
+**配置**：云端 `ASR_BASE_URL`（默认 `https://api.minimaxi.com`）、`ASR_API_KEY`、`ASR_MODEL`（默认 `asr-1.0`）、`ASR_TIMEOUT_MS`（默认 30000）、`RATE_LIMIT_ASR_PER_MINUTE`（默认 20）；插件 `voiceTimeoutMs`（默认 40000）。云端在 staging/production 缺 `ASR_API_KEY` 时启动失败；local 未配置时鉴权后返回 503。
+
+**上游**：`POST {base}/v1/speech_to_text`（Bearer），multipart `file=audio/wav` + `model` + `response_format=json`；业务错误为 HTTP 200 + `base_resp.status_code != 0`。云端不自动重试。
+
+**隐私**：音频只在内存中，不落盘、不落日志、不进指标；日志只记 kind/status 类别，不记 `status_msg`、正文或 base64。
+
 ---
 
 ## 7. 关键设计决策（ADR）
@@ -652,6 +753,7 @@ interface LearnerContextAck {
 | A15 | 播放地址由 Host 换取签名会话，浏览器不持 Bearer | Bearer 留在 Host；签名 URL 只对一次播放有效，可按用户/设备/并发约束 | 多一个端点与会话 TTL；过期后需重新换会话 |
 | A16 | 设备 grant 存 dsh credentials（`credentialKey('trend-coach','device')`），刷新走 `modifyRecord()` | 宿主提供 0600 文件与跨进程串行读改写，避免并发刷新互相覆盖；插件不自定义密钥落盘 | 依赖 `credentials` 服务且必须静态 `inject`；`$DSH_HOME/.credentials.yaml` 的迁移由 dsh 管理 |
 | A17 | 学习上下文用 `systemPrompt.section()`，禁用 `context()` | `section` 每次组装求值、不写聊天历史，适合随场景变化的临时上下文；`context()` 会生成持久 user-role 快照并显示在聊天里 | 依赖 session 级 `agent.id` 查表；section API 漂移需随 dsh 升级验证 |
+| A18 | 语音自带录音按钮 + 浏览器内 WAV 重采样 + 云端 MiniMax ASR | dsh 无公开第三方录音 API；MiniMax 不支持 webm，插件又禁止 ffmpeg/系统命令，因此在浏览器内解码重采样为 16kHz 单声道 PCM16；不依赖实验性语音包 | 2.56MB base64 依赖 Remote 传输；依赖 `conversation.input.right` 与 `InputActions`，需随 dsh 升级验证；麦克风权限受宿主约束 |
 
 ---
 
@@ -662,6 +764,7 @@ interface LearnerContextAck {
 - **Remote**：`$mount` 返回 unmount；插件卸载时先释放动态 inject 作用域，再 unmount。
 - **UI 状态**：面板查询状态为组件本地状态；播放器位置来自 tab params。M4.1 新增全局学习场景 store（课程/知识点/播放位置/选中文本），由体系页与播放器写入、composer 桥接读取。跨会话历史由 dsh 管理。
 - **学习上下文**：Host store 随插件卸载释放；条目 30 分钟 TTL、≤64 会话；退出登录清空；`enabled` 持久化在客户端 `localStorage`。
+- **语音（M4.2）**：录音状态为模块级单例；组件卸载或会话切换调用 `disposeOwner` 停止 recorder、释放 `MediaStream` tracks 并清 pending；页面卸载时浏览器自动停麦；Host 不缓存音频，转写结果直接返回后丢弃。
 - **重复导航**：`revision` 自增即为“重新定位”信号，组件 effect 依赖 `revision`。
 
 ---
@@ -680,6 +783,12 @@ interface LearnerContextAck {
 | 学习上下文非法 | `sessionId`/ID/标题/位置/选中文本越界或跨字段缺失 → `InputError` → `gateway/bad-request` | 客户端只显示中文文案；不重试 |
 | 过期 revision | 返回 `{applied:false}`，不覆盖新快照 | 客户端不回滚、不重试 |
 | 选中文本超长 | 原始 >4000 字符报错；≤4000 则截断到 500 并置 `truncated` | UI 正常显示 chip，无报错 |
+| 语音音频非法 | base64 字符集/长度、WAV 结构、采样率/声道/位深、时长不符 → `InputError` → `gateway/bad-request` | 「录音数据无效，请重试」；不重试 |
+| 语音未识别 | 云端 422 → 受控错误 | 「没有听清，请再说一次」 |
+| 语音过大/限流 | 413 → 「录音过长」；429 → 「操作太频繁」 | 提示后允许学员重新录音 |
+| 语音上游故障 | 502/503/超时 → `gateway/internal` | 「语音服务暂不可用，请重试」 |
+| 麦克风权限/环境不支持 | 客户端能力探测在 Host 之前失败 | 可读提示，按钮保持可用但不发请求 |
+| 插入锚点失效 | `insertText` 返回 false | 保留 pending，显示「插入转写」按钮，由学员手动插入 |
 
 **约定**：Typert 线协议失败码仅 `gateway/bad-request｜cancelled｜internal`：入参非法→bad-request，取消→cancelled，其余→internal + 可读中文文案；业务内部 code 不上线。日志只记录必要上下文，不记录凭据、完整 query 或设备 ID（生产环境）。
 
@@ -695,6 +804,7 @@ interface LearnerContextAck {
 | 视频 | 签名 HLS（短时效、设备绑定、并发限制）、hls.js 解密播放、客户端动态水印（A9/A11） | M2 起分批落地 |
 | 日志 | 不输出 token、完整 query、用户标识；播放地址不落日志 | S4 已验证：Host 只记操作名与错误类型；mock 掩码 userCode/deviceId、不记 query 原文 |
 | 学习上下文 | 仅本机 Host 内存；不上云、不落盘、不落日志、不进指标；选中文本限长并按不可信内容隔离（固定边界 + 转义 + `interpolate:false`）；可关闭 | M4.1 已实现；S10 已验证场景发布、位置桶、选中文本、开关（真实模型出文与图片提问待模型环境） |
+| 语音 | 音频与转写只在内存（浏览器→Host→云端→MiniMax）；不落盘、不落日志、不进指标；Host 与云端双重 WAV 校验；按设备限流、请求体上限 3MiB、单次 ≤60s；转写只插入草稿、不自动发送 | M4.2 实现；mock/fake provider 覆盖；真实 MiniMax 待 `ASR_API_KEY` |
 | 依赖 | 只依赖 dsh 宿主提供的运行时包；定期审计 | 已有 |
 
 ---
@@ -707,6 +817,7 @@ interface LearnerContextAck {
 - 视频必须支持 HTTP Range；HLS 接入后按分片 seek。
 - 云端不可用时，问答明确报错，不伪造引用。
 - 学习上下文段放在系统提示末尾（order 8500），播放位置按 15s 桶更新，降低提示前缀缓存抖动；实测成本偏高时可将桶调到 30–60s。
+- 语音：单次 ≤60s，16kHz 单声道 PCM16 WAV ≤1.92MB（base64 ≤2.56MB）；插件 `voiceTimeoutMs` 40s 大于云端 `ASR_TIMEOUT_MS` 30s，让云端先返回可读错误；录音状态单例避免重复占用麦克风。
 
 ---
 
@@ -721,6 +832,7 @@ interface LearnerContextAck {
 - 上报点：Host 在检索成功（工具与面板共用 `searchKnowledge` 路径）、引用点击、播放器首次 `playing` 时尽力上报；`feedback_submitted` 取自 dsh 内置助手消息反馈（`feedback/message-put` 会话事件），只转发 `positive → up` / `negative → down`，不转发分类、备注或消息内容，且只处理用过 `trend_coach_search` 的会话。失败只记 debug 日志，不影响检索与播放主流程。
 - 关键错误按 §9 的错误码分桶，避免把「空召回」与「服务故障」混在同一指标。
 - 学习上下文完全不进入指标：`setLearnerContext` 只在 debug 日志记录操作名与是否截断，**不记录 sessionId、选中文本、标题或播放位置**。
+- 语音完全不进入指标：`transcribeVoice` 只记操作名、耗时与错误类型，**不记录 base64、转写正文、音频时长明细或完整 deviceId**；云端 ASR 日志同样只记错误类别。
 
 ---
 
@@ -739,6 +851,7 @@ src/
 │   ├── events.ts            # 指标事件上报与同意状态缓存
 │   ├── tool.ts              # trend_coach_search 工具与渲染
 │   ├── learner-context.ts   # 学习上下文 store、渲染与 systemPrompt.section 注册
+│   ├── voice-audio.ts       # M4.2：base64/WAV/时长边界校验
 │   └── service.ts           # TrendCoach Remote 服务
 ├── shared/
 │   └── contracts.ts         # Host/Client 共用领域类型与上限
@@ -748,7 +861,13 @@ src/
     ├── context-model.ts     # 纯函数：位置桶、时间格式、截断、快照
     ├── learner-context.ts   # 客户端全局学习上下文 store
     ├── context-bridge.ts    # conversation.input.left 桥接与会话发布
+    ├── composer-focus.ts    # isVisible + focusComposer（选中与语音共用）
     ├── selection.ts         # 全局选中检测 + 悬浮「提问」
+    ├── voice/
+    │   ├── audio.ts         # encodeWav / bytesToBase64 纯函数
+    │   ├── recorder.ts      # getUserMedia + MediaRecorder + 重采样
+    │   ├── controller.ts    # 录音状态单例、转写、插入与 pending 降级
+    │   └── voice-button.ts  # conversation.input.right occupant
     └── dsh.d.ts             # dsh 客户端服务的最小类型声明
 scripts/build-client.mjs     # esbuild → lib/client.js（__ModuleLoader__ 包装）
 cordis.patch.yml             # bundle patch：插入插件（config 走 schema 默认值）
@@ -783,6 +902,8 @@ docs/                        # 需求、架构、规范
 
 **契约测试（2026-10-31）**：`npm test` 启动独立端口的 mock，覆盖设备码授权/轮换/设备绑定、检索与空召回、非法入参、片段详情、播放会话与签名 HLS、Range、401 过期；同时断言 Host 入参/响应边界、错误映射、不可信文本处理与发布包清单。浏览器内的 Remote 挂载、引用点击与播放定位仍按第 4–6 项手工冒烟。
 
+**M4.2 增补（2026-11-01）**：`test/voice-audio.test.mjs` 覆盖合法 WAV 与错误 magic/立体声/44.1k/8bit/data 长度/时长不符/非法 base64/超长；`test/voice-client.test.mjs` 断言 WAV 头字段、样本字节与 base64 分块；`test/voice-remote.test.mjs` 断言请求体、状态码映射（413/422/429/502/503）与文本清洗；mock 新增 `/v1/asr/transcribe` 并纳入契约测试。浏览器内录放与插入为手工冒烟（需麦克风权限）。
+
 **发布前检查**：版本号、peer 精确版本、`files` 清单、无凭据、`npm run smoke`（临时 DSH_HOME 新 profile 安装并启用插件）、PRD/架构/规范同步。
 
 ---
@@ -795,7 +916,7 @@ docs/                        # 需求、架构、规范
 | M2 | 接通真实云端、credential-ref 鉴权、错误码、显示字段/相邻知识点契约、面板完善、播放器接 hls.js + 客户端水印、指标事件上报 | §4、§6、§10、§12 |
 | M3 | 设备码换取短时 token、体系页、学习进度、后台接口 | 新增账号与体系页章节 |
 | M4.1 | 文字/图片提问（图片复用 dsh 附件与视觉）、自动学习上下文、全局选中文本；评估取证级水印 | §4、§5.4、§6.7、§10、§13 |
-| M4.2 | 语音输入与云端 ASR 对接 | 新增语音输入管线章节 |
+| M4.2 | 语音输入与云端 MiniMax ASR 对接：composer 麦克风、浏览器 WAV 重采样、Remote `transcribeVoice`、云端 `/v1/asr/transcribe`、插入待确认、60s 上限 | §4、§5.5、§6.2/§6.8、§8–§13、§17 |
 | M5 | 互动课堂、Web Speech TTS、白板、测验 | 新增课堂运行时章节 |
 | M6 | 安装包、灰度、兼容矩阵、合规 | 发布与运维章节 |
 
@@ -811,6 +932,9 @@ docs/                        # 需求、架构、规范
 6. 客户端水印能否满足版权方要求、是否需要服务端取证水印，需 M4 与法务/版权方确认。
 7. 学习上下文的播放位置桶（15s）对提示前缀缓存的影响需在真实模型下实测；成本偏高时调整为 30–60s。
 8. 多会话/pane 同时存在时共享同一份全局 UI 场景；是否需要会话级隔离待定，当前按全局场景实现并记录。
+9. 真实 MiniMax ASR 需 `ASR_API_KEY`；当前不可用，先以 mock/fake provider 验证，真实链路作为 M4.2 待验项。
+10. dsh 桌面端对 `getUserMedia`/`MediaRecorder` 的权限与支持需实机确认；不支持时按钮降级提示，不阻断文字提问。
+11. 2.56MB base64 走 Remote 的稳定性需 E2E 实测；失败时先降 8kHz/30s，再评估分片。
 
 ---
 
@@ -825,7 +949,7 @@ docs/                        # 需求、架构、规范
 | F1.4 未覆盖给最近知识点 | P0 | §6.1 `relatedKnowledgePoints` | 已闭合 | mock 展示（S3）+ 真实云端低置信过滤与空召回相邻知识点（S7）；阈值仍需 M1 评估集校准 |
 | F2 知识体系化呈现 | P0 | §4.3、§6.6 | 部分 | 体系页、文章阅读与学习进度已实现；后台内容管理待 M3.2 |
 | F3.1 文字/图片提问 + 自动上下文 + 选中文本 | P0 | §4.2、§5.4、§6.7、A17 | 部分 | 场景发布、位置桶、选中文本与开关已实现并通过 S10（mock）；真实模型出文与图片提问待模型环境验证；图片识别效果取决于学员模型视觉能力 |
-| F3.2 语音提问 | P0 | M4.2 补充 | 待设计 | ASR 接入与语音输入管线 |
+| F3.2 语音提问 | P0 | §4.2、§5.5、§6.2、§6.8、A18 | 部分 | 录音、WAV 编码、Remote、mock ASR 转写与插入/降级已通过 S11；真实 MiniMax（需 `ASR_API_KEY`）、真实系统麦克风权限与双 composer 互斥待验 |
 | F4 AI 互动课堂 | P1 | A12、M5 | 待设计 | 课堂运行时章节、Web Speech 验证 |
 | F5 后台管理 | P0 | 云端职责，M3 | 部分 | 账号与后台登录、React 内容控制台待 M3.1/M3.2 验收 |
 | NFR 性能（检索 P95 ≤ 300ms、首屏 ≤ 2s、起播 ≤ 2s） | P0 | §11 | 部分 | 真实环境压测；hls.js 懒加载 |
@@ -853,6 +977,8 @@ docs/                        # 需求、架构、规范
 
 **S10 验证记录（2026-11-01，插件 mock 3941 + dsh 0.2.1-rc.5 + Chrome/Playwright）**：体系页打开课程与知识点后，composer 发布完整快照（`courseId/courseTitle/chapterId/chapterTitle/knowledgePointId/knowledgePointTitle`），Host ack `applied:true`；播放器打开片段后按 15s 桶发布 `positionSec`（1875→1890），切回课程结构后发布课程级场景（无位置），后台播放 20s 内未覆盖阅读场景；在文章选中文本出现悬浮「提问」，点击后输入框聚焦、chip 显示「已引用选中文本×」，发布含 `selectedText` 的快照，点 × 后清除并重新发布；开关关闭时发布 `enabled:false` 且不再显示悬浮按钮，重新开启恢复；在 composer 内选中文字不触发悬浮按钮。Host 渲染模板、边界转义、TTL/LRU、截断与 revision 淘汰由 `test/learner-context.test.mjs`、`test/context-model.test.mjs`、`test/untrusted.test.mjs` 覆盖。真实模型出文（system prompt 实际生效）与图片提问未在本次浏览器验证，因未配置模型/API Key；图片流程仅依赖 dsh 原生附件与视觉能力，插件侧无二进制管线。
 
+**S11 验证记录（2026-11-01，插件 mock 3941 + dsh 0.2.1-rc.5 + Playwright/Chrome）**：composer 右侧出现麦克风；点击后先显示「授权麦克风…」，取得麦克风后显示计时；停止后经 Host WAV/时长校验与 `POST /v1/asr/transcribe` 返回固定转写「趋势反转的初步信号有哪些？」，插入输入框且未自动发送（发送按钮仅变为可用）。自动化环境会挂起真实权限弹窗，故用合成 MediaStream 代替系统麦克风，录音 → MediaRecorder → decodeAudioData → 16k 重采样 → PCM16 WAV → Remote → mock ASR → 插入全链路为真实执行；60s 上限通过推进时钟触发自动停止并插入。录音中修改草稿使插入锚点失效时，界面出现「插入转写」与清除按钮，点击后按新光标位置插入。拒绝麦克风权限显示「麦克风权限被拒绝，请在浏览器设置中允许后重试」；`getUserMedia` 缺失显示「当前环境不支持录音」；退出登录后录音显示「尚未登录，请先在趋势伴学面板完成设备授权」。mock 日志仅含掩码设备与时长（`asr device=90*** durationMs=7260`），dsh 日志无 base64、转写正文或完整 deviceId。测试中发现并修复：权限弹窗未决时 UI 误报「录音中」，停止后永久停在「转写中…」；现新增 `starting` 阶段，按钮显示「授权麦克风…」并禁用。未覆盖：真实系统麦克风权限弹窗（需桌面端手工确认）、双 composer 分栏互斥（当前布局仅一个 composer，互斥由模块级单例实现）、录音中主动取消（仅面板卸载路径）、真实 MiniMax 链路（需 `ASR_API_KEY`）。
+
 **M2 前必须闭合**：真实云端检索返回展示字段与播放语义已闭合（S7）。设备码授权、错误码映射与日志脱敏（S2/S4）、展示字段与回退（S5）、提示注入防护与常驻免责声明（S6）、低置信回退（S7）、事件同意与上报（S8）、429 提示与注销（S9）已闭合。剩余：检索阈值按 M1 评估集校准。
 
 ---
@@ -876,3 +1002,6 @@ docs/                        # 需求、架构、规范
 | 学习上下文注入 | `systemPrompt.section()` 临时段，禁用 `context()` | 已决 | A17、§6.7 |
 | 位置更新粒度 | 15s 桶，实测成本偏高时调大到 30–60s | 已决（待实测） | §11、§16.7 |
 | 多会话场景归属 | 全局 UI 场景，不做会话隔离 | 已决（待评估） | §5.4、§16.8 |
+| ASR 供应商 | 云端 MiniMax（`asr-1.0`），保留 provider 接口 | 已决（真实链路待 `ASR_API_KEY`） | A18、§6.8 |
+| 语音入口 | `conversation.input.right` + 自有录音按钮，不依赖 dsh 语音包 | 已决 | A18、§4.2 |
+| 语音是否自动发送 | 不自动发送；插入 composer 待学员确认，锚点失效降级为手动插入 | 已决 | §5.5、§6.8 |
