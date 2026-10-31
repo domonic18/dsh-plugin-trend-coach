@@ -15,6 +15,14 @@ const keyFile = `${hlsDir}enc.key`
 const sessionTtlMs = 10 * 60 * 1000
 const sessions = new Map()
 
+const accessTtlMs = Number(process.env.MOCK_ACCESS_TTL_MS ?? 120_000)
+const deviceTtlMs = 5 * 60 * 1000
+const devicePollIntervalSec = 2
+const deviceCodes = new Map()
+const userCodes = new Map()
+const accessTokens = new Map()
+const refreshTokens = new Map()
+
 function scoreSegment(segment, query) {
   const hits = segment.keywords.filter(keyword => query.includes(keyword)).length
   if (hits === 0) return 0
@@ -44,7 +52,7 @@ function search({ query, courseId, topK }) {
 function cors(response) {
   response.setHeader('access-control-allow-origin', '*')
   response.setHeader('access-control-allow-methods', 'GET, POST, OPTIONS')
-  response.setHeader('access-control-allow-headers', 'content-type, authorization')
+  response.setHeader('access-control-allow-headers', 'content-type, authorization, x-device-id')
 }
 
 function json(response, status, payload) {
@@ -53,7 +61,7 @@ function json(response, status, payload) {
   response.end(JSON.stringify(payload))
 }
 
-function issueSession() {
+function issueSession(deviceId) {
   const token = randomBytes(24).toString('hex')
   const sessionId = `ps_${randomBytes(8).toString('hex')}`
   const expiresAt = Date.now() + sessionTtlMs
@@ -62,8 +70,83 @@ function issueSession() {
     sessionId,
     expiresAt,
     playlistUrl: `${origin}/media/hls/index.m3u8?token=${token}`,
-    watermark: { label: '学员 1001' },
+    watermark: { label: `学员 ${deviceId.slice(0, 6)}` },
   }
+}
+
+function issueGrant(deviceId) {
+  const accessToken = randomBytes(24).toString('hex')
+  const refreshToken = randomBytes(24).toString('hex')
+  const expiresAt = Date.now() + accessTtlMs
+  accessTokens.set(accessToken, { deviceId, expiresAt })
+  refreshTokens.set(refreshToken, { deviceId })
+  return { accessToken, refreshToken, expiresAt, deviceId }
+}
+
+function authenticate(request) {
+  const header = request.headers.authorization
+  if (typeof header !== 'string' || !header.startsWith('Bearer ')) return { status: 401 }
+  const token = header.slice('Bearer '.length)
+  const entry = accessTokens.get(token)
+  if (entry === undefined) return { status: 401 }
+  if (entry.expiresAt <= Date.now()) {
+    accessTokens.delete(token)
+    return { status: 401 }
+  }
+  const deviceId = request.headers['x-device-id']
+  if (typeof deviceId !== 'string' || deviceId !== entry.deviceId) return { status: 403 }
+  return { ok: true, deviceId: entry.deviceId }
+}
+
+const USER_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+
+function makeUserCode() {
+  const pick = () => USER_CODE_ALPHABET[randomBytes(1)[0] % USER_CODE_ALPHABET.length]
+  return `${pick()}${pick()}${pick()}${pick()}-${pick()}${pick()}${pick()}${pick()}`
+}
+
+function requireAuth(request, response) {
+  const auth = authenticate(request)
+  if (auth.ok === true) return auth
+  json(response, auth.status, { error: auth.status === 403 ? 'device mismatch' : 'unauthorized' })
+  return undefined
+}
+
+async function readJson(request) {
+  const chunks = []
+  for await (const chunk of request) chunks.push(chunk)
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString('utf8'))
+  } catch {
+    return undefined
+  }
+}
+
+function escapeHtml(value) {
+  return value.replace(/[&<>"']/g, character => `&#${character.charCodeAt(0)};`)
+}
+
+function serveDevicePage(response, url) {
+  const userCode = url.searchParams.get('code') ?? ''
+  const body = `<!doctype html>
+<meta charset="utf-8">
+<title>趋势伴学设备授权</title>
+<h1>趋势伴学设备授权</h1>
+<p>设备码：<code>${escapeHtml(userCode)}</code></p>
+<p id="msg">确认是本人操作后点击批准。</p>
+<button id="approve">批准授权</button>
+<script>
+document.getElementById('approve').addEventListener('click', async () => {
+  const response = await fetch('/v1/auth/device/approve', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ userCode: ${JSON.stringify(userCode)} }),
+  })
+  document.getElementById('msg').textContent = response.ok ? '已授权，请回到客户端等待生效。' : '设备码无效或已过期。'
+})
+</script>`
+  response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
+  response.end(body)
 }
 
 function tokenFrom(url) {
@@ -132,6 +215,112 @@ const server = createServer(async (request, response) => {
     return
   }
 
+  if (request.method === 'GET' && url.pathname === '/device') {
+    serveDevicePage(response, url)
+    return
+  }
+
+  if (request.method === 'POST' && url.pathname === '/v1/auth/device/code') {
+    const payload = await readJson(request)
+    if (typeof payload?.clientId !== 'string' || typeof payload?.deviceId !== 'string') {
+      json(response, 400, { error: 'clientId and deviceId are required' })
+      return
+    }
+    const deviceCode = randomBytes(18).toString('hex')
+    let userCode = makeUserCode()
+    while (userCodes.has(userCode)) userCode = makeUserCode()
+    deviceCodes.set(deviceCode, {
+      userCode,
+      deviceId: payload.deviceId,
+      expiresAt: Date.now() + deviceTtlMs,
+      approved: false,
+    })
+    userCodes.set(userCode, deviceCode)
+    console.log(`[mock-kb] device code issued userCode=${userCode} device=${payload.deviceId}`)
+    json(response, 200, {
+      deviceCode,
+      userCode,
+      verificationUri: `${origin}/device?code=${encodeURIComponent(userCode)}`,
+      expiresIn: Math.floor(deviceTtlMs / 1000),
+      interval: devicePollIntervalSec,
+    })
+    return
+  }
+
+  if (request.method === 'POST' && url.pathname === '/v1/auth/device/approve') {
+    const payload = await readJson(request)
+    const userCode = typeof payload?.userCode === 'string' ? payload.userCode.trim().toUpperCase() : ''
+    const deviceCode = userCodes.get(userCode)
+    const entry = deviceCode === undefined ? undefined : deviceCodes.get(deviceCode)
+    if (entry === undefined || Date.now() >= entry.expiresAt) {
+      json(response, 404, { error: 'device code invalid or expired' })
+      return
+    }
+    entry.approved = true
+    console.log(`[mock-kb] device code approved userCode=${userCode}`)
+    json(response, 200, { approved: true })
+    return
+  }
+
+  if (request.method === 'POST' && url.pathname === '/v1/auth/device/token') {
+    const payload = await readJson(request)
+    const deviceCode = payload?.deviceCode
+    const entry = typeof deviceCode === 'string' ? deviceCodes.get(deviceCode) : undefined
+    if (entry === undefined) {
+      json(response, 200, { status: 'expired' })
+      return
+    }
+    if (Date.now() >= entry.expiresAt) {
+      deviceCodes.delete(deviceCode)
+      userCodes.delete(entry.userCode)
+      json(response, 200, { status: 'expired' })
+      return
+    }
+    if (!entry.approved) {
+      json(response, 200, { status: 'pending' })
+      return
+    }
+    deviceCodes.delete(deviceCode)
+    userCodes.delete(entry.userCode)
+    const grant = issueGrant(entry.deviceId)
+    console.log(`[mock-kb] device authorized userCode=${entry.userCode} device=${entry.deviceId}`)
+    json(response, 200, { status: 'authorized', grant })
+    return
+  }
+
+  if (request.method === 'POST' && url.pathname === '/v1/auth/refresh') {
+    const payload = await readJson(request)
+    const refreshToken = payload?.refreshToken
+    const deviceId = payload?.deviceId
+    const entry = typeof refreshToken === 'string' ? refreshTokens.get(refreshToken) : undefined
+    if (entry === undefined) {
+      json(response, 401, { error: 'refresh token invalid' })
+      return
+    }
+    if (deviceId !== entry.deviceId) {
+      json(response, 403, { error: 'device mismatch' })
+      return
+    }
+    refreshTokens.delete(refreshToken)
+    for (const [token, meta] of accessTokens) {
+      if (meta.deviceId === entry.deviceId) accessTokens.delete(token)
+    }
+    const grant = issueGrant(entry.deviceId)
+    console.log(`[mock-kb] token refreshed device=${entry.deviceId}`)
+    json(response, 200, grant)
+    return
+  }
+
+  if (request.method === 'POST' && url.pathname === '/v1/debug/expire') {
+    let expired = 0
+    for (const meta of accessTokens.values()) {
+      if (meta.expiresAt > Date.now()) expired += 1
+      meta.expiresAt = 0
+    }
+    json(response, 200, { expired })
+    return
+  }
+
   if (request.method === 'GET' && url.pathname.startsWith('/media/hls/')) {
     serveHls(request, response, url)
     return
@@ -165,6 +354,8 @@ const server = createServer(async (request, response) => {
   }
 
   if (request.method === 'POST' && url.pathname === '/v1/playback/sessions') {
+    const auth = requireAuth(request, response)
+    if (auth === undefined) return
     const chunks = []
     for await (const chunk of request) chunks.push(chunk)
     let payload
@@ -183,13 +374,14 @@ const server = createServer(async (request, response) => {
       json(response, 503, { error: 'hls asset missing, run npm run mock:rebuild' })
       return
     }
-    const session = issueSession()
+    const session = issueSession(auth.deviceId)
     console.log(`[mock-kb] playback session ${session.sessionId} segment=${segmentId}`)
     json(response, 200, session)
     return
   }
 
   if (request.method === 'GET' && url.pathname.startsWith('/v1/kb/segments/')) {
+    if (requireAuth(request, response) === undefined) return
     const segmentId = decodeURIComponent(url.pathname.slice('/v1/kb/segments/'.length))
     const segment = fixtures.find(item => item.segmentId === segmentId)
     if (segment === undefined) {
@@ -205,6 +397,8 @@ const server = createServer(async (request, response) => {
     json(response, 404, { error: 'not found' })
     return
   }
+
+  if (requireAuth(request, response) === undefined) return
 
   const chunks = []
   for await (const chunk of request) chunks.push(chunk)
