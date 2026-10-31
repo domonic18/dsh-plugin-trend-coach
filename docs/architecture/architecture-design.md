@@ -503,8 +503,8 @@ Content-Type: application/json
 - 一期不接入第三方分析 SDK：dsh 自带的产品分析仅覆盖桌面端，且不把第三方插件标识作为分析维度（A13）。
 - 指标上报走云端鉴权事件接口，与账号绑定，字段最小化；未登录或未同意时不上报。
 - 同意状态存云端 `users.events_consent`（默认 `false`），插件经 `GET/PUT /v1/events/consent` 读写；右栏面板提供开关，撤销后 Host 立即停止上报（已接收数据不回溯删除）。
-- 事件白名单：`search_requested`（耗时、topK、命中数、是否空召回）、`citation_clicked`（segmentId）、`player_started`（起播耗时、是否自动播放被拒）；**不含** query 原文、回答内容、完整播放地址。
-- 上报点：Host 在检索成功（工具与面板共用 `searchKnowledge` 路径）、引用点击、播放器首次 `playing` 时尽力上报；失败只记 debug 日志，不影响检索与播放主流程。
+- 事件白名单：`search_requested`（耗时、topK、命中数、是否空召回）、`citation_clicked`（segmentId）、`player_started`（起播耗时、是否自动播放被拒）、`feedback_submitted`（评分 up/down）；**不含** query 原文、回答内容、完整播放地址。
+- 上报点：Host 在检索成功（工具与面板共用 `searchKnowledge` 路径）、引用点击、播放器首次 `playing` 时尽力上报；`feedback_submitted` 取自 dsh 内置助手消息反馈（`feedback/message-put` 会话事件），只转发 `positive → up` / `negative → down`，不转发分类、备注或消息内容，且只处理用过 `trend_coach_search` 的会话。失败只记 debug 日志，不影响检索与播放主流程。
 - 关键错误按 §9 的错误码分桶，避免把「空召回」与「服务故障」混在同一指标。
 
 ---
