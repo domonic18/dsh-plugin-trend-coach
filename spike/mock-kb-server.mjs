@@ -394,6 +394,20 @@ const server = createServer(async (request, response) => {
     return
   }
 
+  if (request.method === 'POST' && url.pathname === '/v1/auth/revoke') {
+    const auth = requireAuth(request, response)
+    if (auth === undefined) return
+    for (const [token, meta] of accessTokens) {
+      if (meta.deviceId === auth.deviceId) accessTokens.delete(token)
+    }
+    for (const [token, meta] of refreshTokens) {
+      if (meta.deviceId === auth.deviceId) refreshTokens.delete(token)
+    }
+    console.log(`[mock-kb] device revoked device=${mask(auth.deviceId)}`)
+    json(response, 200, { revoked: true })
+    return
+  }
+
   if (request.method === 'POST' && url.pathname === '/v1/debug/expire') {
     let expired = 0
     for (const meta of accessTokens.values()) {

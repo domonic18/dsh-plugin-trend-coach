@@ -328,6 +328,46 @@ test('mock 云端接口满足对接清单', async (t) => {
     grant = refreshed.json
   })
 
+  await t.test('注销吊销本设备令牌', async () => {
+    const deviceId = 'contract-device-003'
+    const start = await api('/v1/auth/device/code', {
+      method: 'POST',
+      body: { clientId: 'dsh-plugin-trend-coach', deviceId },
+    })
+    await api('/v1/auth/device/approve', {
+      method: 'POST',
+      body: { userCode: start.json.userCode },
+    })
+    const authorized = await api('/v1/auth/device/token', {
+      method: 'POST',
+      body: { deviceCode: start.json.deviceCode },
+    })
+    const own = authorized.json.grant
+
+    const revoked = await api('/v1/auth/revoke', {
+      method: 'POST',
+      body: {},
+      token: own.accessToken,
+      deviceId,
+    })
+    assert.equal(revoked.status, 200)
+    assert.deepEqual(revoked.json, { revoked: true })
+
+    const denied = await api('/v1/kb/search', {
+      method: 'POST',
+      body: { query: '趋势' },
+      token: own.accessToken,
+      deviceId,
+    })
+    assert.equal(denied.status, 401)
+
+    const refreshDenied = await api('/v1/auth/refresh', {
+      method: 'POST',
+      body: { refreshToken: own.refreshToken, deviceId },
+    })
+    assert.equal(refreshDenied.status, 401)
+  })
+
   await t.test('access 过期后返回 401', async () => {
     const expired = await api('/v1/debug/expire', { method: 'POST', body: {} })
     assert.equal(expired.status, 200)
