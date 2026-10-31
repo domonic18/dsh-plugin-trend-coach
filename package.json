@@ -26,6 +26,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/build-client.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "pretest": "node spike/build-hls.mjs",
     "test": "npm run build && node --test test/*.test.mjs",
     "test:only": "node --test test/*.test.mjs",
     "smoke": "npm run build && node scripts/smoke-install.mjs",
