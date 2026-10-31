@@ -33,6 +33,8 @@ const deviceCodes = new Map()
 const userCodes = new Map()
 const accessTokens = new Map()
 const refreshTokens = new Map()
+const eventsConsent = new Map()
+const events = new Map()
 
 /** 日志只保留可关联前缀，避免 userCode / deviceId 完整落盘。 */
 function mask(value) {
@@ -97,7 +99,7 @@ function relatedKnowledgePoints(query) {
 
 function cors(response) {
   response.setHeader('access-control-allow-origin', '*')
-  response.setHeader('access-control-allow-methods', 'GET, POST, OPTIONS')
+  response.setHeader('access-control-allow-methods', 'GET, POST, PUT, OPTIONS')
   response.setHeader('access-control-allow-headers', 'content-type, authorization, x-device-id')
 }
 
@@ -149,6 +151,41 @@ const USER_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
 function makeUserCode() {
   const pick = () => USER_CODE_ALPHABET[randomBytes(1)[0] % USER_CODE_ALPHABET.length]
   return `${pick()}${pick()}${pick()}${pick()}-${pick()}${pick()}${pick()}${pick()}`
+}
+
+const EVENT_FIELDS = {
+  search_requested: ['durationMs', 'topK', 'hits', 'empty'],
+  citation_clicked: ['segmentId'],
+  player_started: ['startupMs', 'autoplayBlocked'],
+}
+
+function isInt(value, min, max) {
+  return typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max
+}
+
+function validateEvent(payload) {
+  if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) return 'body must be an object'
+  if (typeof payload.eventId !== 'string' || !/^[A-Za-z0-9._:-]{8,64}$/.test(payload.eventId)) {
+    return 'eventId invalid'
+  }
+  const fields = EVENT_FIELDS[payload.name]
+  if (fields === undefined) return 'event name not allowed'
+  const props = payload.props === undefined ? {} : payload.props
+  if (typeof props !== 'object' || props === null || Array.isArray(props)) return 'props must be an object'
+  if (Object.keys(props).some(key => !fields.includes(key))) return 'props not allowed'
+  switch (payload.name) {
+    case 'search_requested':
+      return isInt(props.durationMs, 0, 60_000) && isInt(props.topK, 1, 20)
+        && isInt(props.hits, 0, 20) && typeof props.empty === 'boolean' ? undefined : 'props invalid'
+    case 'citation_clicked':
+      return typeof props.segmentId === 'string' && /^seg-[A-Za-z0-9._-]+$/.test(props.segmentId)
+        ? undefined : 'props invalid'
+    case 'player_started':
+      return isInt(props.startupMs, 0, 60_000) && typeof props.autoplayBlocked === 'boolean'
+        ? undefined : 'props invalid'
+    default:
+      return 'event name not allowed'
+  }
 }
 
 function requireAuth(request, response) {
@@ -364,6 +401,46 @@ const server = createServer(async (request, response) => {
       meta.expiresAt = 0
     }
     json(response, 200, { expired })
+    return
+  }
+
+  if (request.method === 'GET' && url.pathname === '/v1/events/consent') {
+    const auth = requireAuth(request, response)
+    if (auth === undefined) return
+    json(response, 200, { consent: eventsConsent.get(auth.deviceId) === true })
+    return
+  }
+
+  if (request.method === 'PUT' && url.pathname === '/v1/events/consent') {
+    const auth = requireAuth(request, response)
+    if (auth === undefined) return
+    const payload = await readJson(request)
+    if (typeof payload?.consent !== 'boolean') {
+      json(response, 400, { error: 'consent must be a boolean' })
+      return
+    }
+    eventsConsent.set(auth.deviceId, payload.consent)
+    json(response, 200, { consent: payload.consent })
+    return
+  }
+
+  if (request.method === 'POST' && url.pathname === '/v1/events') {
+    const auth = requireAuth(request, response)
+    if (auth === undefined) return
+    if (eventsConsent.get(auth.deviceId) !== true) {
+      json(response, 403, { error: 'events consent required' })
+      return
+    }
+    const payload = await readJson(request)
+    const invalid = validateEvent(payload)
+    if (invalid !== undefined) {
+      json(response, 400, { error: invalid })
+      return
+    }
+    const duplicate = events.has(payload.eventId)
+    events.set(payload.eventId, payload)
+    console.log(`[mock-kb] event ${payload.name} duplicate=${duplicate}`)
+    json(response, 202, { accepted: true })
     return
   }
 

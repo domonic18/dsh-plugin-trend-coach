@@ -228,6 +228,83 @@ test('mock 云端接口满足对接清单', async (t) => {
     assert.equal(missing.status, 404)
   })
 
+  await t.test('事件同意与白名单上报', async () => {
+    const initial = await api('/v1/events/consent', { token: grant.accessToken })
+    assert.equal(initial.status, 200)
+    assert.deepEqual(initial.json, { consent: false })
+
+    const event = {
+      eventId: 'evt-mock-contract-0001',
+      name: 'search_requested',
+      props: { durationMs: 42, topK: 5, hits: 2, empty: false },
+    }
+
+    const denied = await api('/v1/events', {
+      method: 'POST',
+      body: event,
+      token: grant.accessToken,
+    })
+    assert.equal(denied.status, 403)
+
+    const invalidConsent = await api('/v1/events/consent', {
+      method: 'PUT',
+      body: { consent: 'yes' },
+      token: grant.accessToken,
+    })
+    assert.equal(invalidConsent.status, 400)
+
+    const granted = await api('/v1/events/consent', {
+      method: 'PUT',
+      body: { consent: true },
+      token: grant.accessToken,
+    })
+    assert.equal(granted.status, 200)
+    assert.deepEqual(granted.json, { consent: true })
+
+    const accepted = await api('/v1/events', {
+      method: 'POST',
+      body: event,
+      token: grant.accessToken,
+    })
+    assert.equal(accepted.status, 202)
+    assert.deepEqual(accepted.json, { accepted: true })
+
+    const duplicate = await api('/v1/events', {
+      method: 'POST',
+      body: event,
+      token: grant.accessToken,
+    })
+    assert.equal(duplicate.status, 202)
+
+    const invalidEvents = [
+      { ...event, eventId: 'evt-mock-contract-0002', name: 'answer_generated', props: {} },
+      { ...event, eventId: 'evt-mock-contract-0003', props: { ...event.props, query: '趋势' } },
+      { eventId: 'evt-mock-contract-0004', name: 'citation_clicked', props: { segmentId: 'bad' } },
+    ]
+    for (const payload of invalidEvents) {
+      const invalid = await api('/v1/events', {
+        method: 'POST',
+        body: payload,
+        token: grant.accessToken,
+      })
+      assert.equal(invalid.status, 400, JSON.stringify(payload))
+    }
+
+    const revoked = await api('/v1/events/consent', {
+      method: 'PUT',
+      body: { consent: false },
+      token: grant.accessToken,
+    })
+    assert.deepEqual(revoked.json, { consent: false })
+
+    const deniedAfterRevoke = await api('/v1/events', {
+      method: 'POST',
+      body: { ...event, eventId: 'evt-mock-contract-0005' },
+      token: grant.accessToken,
+    })
+    assert.equal(deniedAfterRevoke.status, 403)
+  })
+
   await t.test('刷新轮换并使旧 refresh 失效', async () => {
     const refreshed = await api('/v1/auth/refresh', {
       method: 'POST',
