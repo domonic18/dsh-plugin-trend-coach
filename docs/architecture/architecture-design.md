@@ -1,10 +1,10 @@
-# 趋势伴学插件 · 架构设计（v1.3）
+# 趋势伴学插件 · 架构设计（v1.4）
 
-- 状态：v1.3，基于 PRD v1.3 与 dsh 0.2.1-rc.5 实测/源码调研结论；补齐需求覆盖矩阵与待决策清单
+- 状态：v1.4，基于 PRD v1.3 与 dsh 0.2.1-rc.5 实测/源码调研结论；补齐需求覆盖矩阵与待决策清单
 - 日期：2026-10-31
 - 上游文档：[产品需求文档](../requirements/product-requirements.md)
 - 配套规范：[项目规范](../conventions/project-conventions.md)
-- 版本变更：v1.3 落地指标事件同意与上报（`GET/PUT /v1/events/consent` + 三类白名单事件），并记录 S8 真实云端联调结果；v1.2 落地播放会话契约（`POST /v1/playback/sessions`）、媒体 CORS 要求、引用时间点只信 `getSegment`、hls.js 优先于 `canPlayType` 的选择顺序，并记录 S1 端到端验证结果；v1.1 补齐播放语义、HLS 方案、鉴权分期、水印、TTS、指标、显示字段/相邻知识点、`engines.dsh` 与 §17/§18。
+- 版本变更：v1.4 落地退出并注销（`POST /v1/auth/revoke`）、面板跨挂载状态保留、`npm run smoke` 与 CI，并记录 S9 真实云端联调结果；v1.3 落地指标事件同意与上报（`GET/PUT /v1/events/consent` + 三类白名单事件），并记录 S8 真实云端联调结果；v1.2 落地播放会话契约（`POST /v1/playback/sessions`）、媒体 CORS 要求、引用时间点只信 `getSegment`、hls.js 优先于 `canPlayType` 的选择顺序，并记录 S1 端到端验证结果；v1.1 补齐播放语义、HLS 方案、鉴权分期、水印、TTS、指标、显示字段/相邻知识点、`engines.dsh` 与 §17/§18。
 
 ---
 
@@ -292,7 +292,7 @@ sequenceDiagram
 | `trendCoach/authStatus` | 无 | `{mode: 'device'\|'credential'\|'none', authorized, deviceId?}` |
 | `trendCoach/beginDeviceAuth` | `signal` | `{userCode, verificationUri, expiresAt, interval}` |
 | `trendCoach/pollDeviceAuth` | `signal` | `{status: 'pending'\|'authorized'\|'expired'}` |
-| `trendCoach/signOut` | 无 | `{signedOut: true}` |
+| `trendCoach/signOut` | 无 | `{signedOut: true}`；先尽力调用 `POST /v1/auth/revoke` 吊销本设备令牌，再删除本地 grant，网络失败不阻塞登出 |
 
 - 客户端调用返回 `{ ok: true, value } | { ok: false, error }`。
 - spec 的 `package` 必须为 `dsh-plugin-trend-coach`；method wire 名为 `服务名/方法名`；result 使用 strict codec。
@@ -557,12 +557,12 @@ docs/                        # 需求、架构、规范
 |---|---|---|
 | 类型/构建 | tsc strict + esbuild | 已有 |
 | 契约 | 工具/Remote/云端响应 schema 校验 | Host 手写校验 + `test/*.test.mjs` 断言 |
-| 集成 | mock KB + 插件 E2E | mock 六接口契约已脚本化；浏览器 E2E 仍手工 |
-| 兼容 | dsh 版本矩阵（最低支持版本 + 当前版） | `engines`/peer 已脚本断言；多版本矩阵待 M2 末建立 |
+| 集成 | mock KB + 插件 E2E | mock 六接口契约已脚本化；GitHub Actions 跑 typecheck + test；浏览器 E2E 仍手工 |
+| 兼容 | dsh 版本矩阵（最低支持版本 + 当前版） | 最低=当前=dsh 0.2.1-rc.5；`engines`/peer 由 `test/package.test.mjs` 断言；新 profile 安装由 `npm run smoke` 验证 |
 
 **契约测试（2026-10-31）**：`npm test` 启动独立端口的 mock，覆盖设备码授权/轮换/设备绑定、检索与空召回、非法入参、片段详情、播放会话与签名 HLS、Range、401 过期；同时断言 Host 入参/响应边界、错误映射、不可信文本处理与发布包清单。浏览器内的 Remote 挂载、引用点击与播放定位仍按第 4–6 项手工冒烟。
 
-**发布前检查**：版本号、peer 精确版本、`files` 清单、无凭据、tarball 安装冒烟、PRD/架构/规范同步。
+**发布前检查**：版本号、peer 精确版本、`files` 清单、无凭据、`npm run smoke`（临时 DSH_HOME 新 profile 安装并启用插件）、PRD/架构/规范同步。
 
 ---
 
@@ -604,8 +604,8 @@ docs/                        # 需求、架构、规范
 | F4 AI 互动课堂 | P1 | A12、M5 | 待设计 | 课堂运行时章节、Web Speech 验证 |
 | F5 后台管理 | P0 | 云端职责，M3 | 待设计 | 后台接口与权限契约 |
 | NFR 性能（检索 P95 ≤ 300ms、首屏 ≤ 2s、起播 ≤ 2s） | P0 | §11 | 部分 | 真实环境压测；hls.js 懒加载 |
-| NFR 安全（最小权限、不可信内容、签名播放、水印） | P0 | §10、A10、A11–A13、A16 | 部分 | 设备码/凭据、水印、输入/响应上限、日志脱敏、提示注入防护已验证（S1–S7）；剩真实云端 429 限流提示验证 |
-| NFR 合规（风险提示、AI 合规、隐私） | P0 | §10、PRD §7 | 部分 | 面板与播放器常驻免责声明已验证（S6），指标同意与撤回已验证（S8）；剩注销流程 |
+| NFR 安全（最小权限、不可信内容、签名播放、水印） | P0 | §10、A10、A11–A13、A16 | 部分 | 设备码/凭据、水印、输入/响应上限、日志脱敏、提示注入防护（S1–S7）、真实云端 429 提示（S9）已验证；真实环境压测待 M6 |
+| NFR 合规（风险提示、AI 合规、隐私） | P0 | §10、PRD §7 | 部分 | 面板与播放器常驻免责声明（S6）、指标同意与撤回（S8）、退出并注销与服务端吊销（S9）已验证；账号级删除随 M3 |
 | 指标（激活/引用点击/满意度等） | P0 | §12、A13 | 部分 | 检索/引用/播放三类事件与同意开关已验证（S8）；满意度（点赞/点踩）与激活率聚合未接入 |
 
 **S1 验证记录（2026-10-31，mock + dsh 0.2.1-rc.5 + Chrome）**：`POST /v1/playback/sessions` → 签名 m3u8 → key/分片（均带 token）→ hls.js 解密播放，起播定位到 `startSec`；`min(endSec, start+60)` 片尾暂停与“继续播放”提示生效；`<code>seg-xxx</code>` 与 `trend-coach.local` 链接两条引用路径都经 `getSegment` 取权威起止秒，URL 里的 `t/e` 被忽略。CORS、错误 403（token 无效/过期）已验证。
@@ -624,7 +624,9 @@ docs/                        # 需求、架构、规范
 
 **S8 验证记录（2026-10-31，真实云端 trend-coach-cloud + PostgreSQL + dsh 0.2.1-rc.5 + Chrome）**：右栏面板新增指标同意开关，默认未勾选；授权后读取 `GET /v1/events/consent` 显示 `false`，未同意时检索后云端 `events` 表无新记录。勾选后 `PUT /v1/events/consent` 返回 `true` 并落库：面板检索上报 `search_requested`（hits=3、topK=5、empty=false、6ms），点击结果上报 `citation_clicked`（segmentId），播放器首次 `playing` 上报 `player_started`（startupMs=36、autoplayBlocked=false）；对话触发 `trend_coach_search` 上报 hits=1，点击回答内引用链接再上报 `citation_clicked`，事件均不含 query 原文或回答内容。取消勾选后云端同意状态回到 `false`，再次检索不再新增事件。云端契约测试覆盖同意默认值/读写/撤回与事件门禁，插件 mock 契约测试同步覆盖。
 
-**M2 前必须闭合**：真实云端检索返回展示字段与播放语义已闭合（S7）。设备码授权、错误码映射与日志脱敏（S2/S4）、展示字段与回退（S5）、提示注入防护与常驻免责声明（S6）、低置信回退（S7）、事件同意与上报（S8）已闭合。剩余：检索阈值按 M1 评估集校准；注销流程。
+**S9 验证记录（2026-10-31，真实云端 trend-coach-cloud + PostgreSQL + dsh 0.2.1-rc.5 + Chrome）**：云端以 `RATE_LIMIT_SEARCH_PER_MINUTE=3` 启动，面板连续检索第 4 次显示「请求过于频繁，请稍后重试」，无内部状态码；恢复默认配额后检索恢复。切换右栏 tab 再返回，输入框与上次检索结果（含错误提示）保留。点击「退出并注销」后云端 `devices.status` 变为 `revoked`、该设备 3 个 access 与 3 个 refresh 全部标记吊销，面板回到未授权并隐藏指标开关；重新设备授权后设备状态恢复 `active`，检索正常。
+
+**M2 前必须闭合**：真实云端检索返回展示字段与播放语义已闭合（S7）。设备码授权、错误码映射与日志脱敏（S2/S4）、展示字段与回退（S5）、提示注入防护与常驻免责声明（S6）、低置信回退（S7）、事件同意与上报（S8）、429 提示与注销（S9）已闭合。剩余：检索阈值按 M1 评估集校准。
 
 ---
 

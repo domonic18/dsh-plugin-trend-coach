@@ -28,6 +28,7 @@
 npm run typecheck                     # tsc strict
 npm run build                         # Host tsc + Client esbuild → lib/
 npm test                              # 构建后跑 Host 边界/配置/契约/打包断言
+npm run smoke                         # 临时 DSH_HOME 新 profile 安装并启用插件
 npm run mock                          # mock KB + video @ 127.0.0.1:3939
 npm pack                              # 生成安装包（*.tgz 已 gitignore）
 npx --yes @deepseek-ai/dsh@0.2.1-rc.5 --profile <name> --port <port> --no-open
