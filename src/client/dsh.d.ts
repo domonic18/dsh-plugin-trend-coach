@@ -1,66 +1,24 @@
 import type { Context } from '@deepseek-ai/cordis'
-
-export interface SearchSegment {
-  segmentId: string
-  courseId: string
-  chapterId: string
-  knowledgePointId: string
-  title: string
-  courseTitle?: string
-  chapterTitle?: string
-  knowledgePointTitle?: string
-  startSec: number
-  endSec: number
-  text: string
-  score: number
-}
-
-export interface RelatedKnowledgePoint {
-  knowledgePointId: string
-  title: string
-}
-
-export interface SearchPayload {
-  query: string
-  segments: SearchSegment[]
-  relatedKnowledgePoints: RelatedKnowledgePoint[]
-}
+import type {
+  AuthStatus,
+  DeviceAuthPoll,
+  DeviceAuthStart,
+  PlaybackSession,
+  SearchResult,
+  Segment,
+} from '../shared/contracts.js'
 
 export type RemoteSearchResult =
-  | { ok: true; value: SearchPayload }
+  | { ok: true; value: SearchResult }
   | { ok: false; error: { code: string; message: string } }
 
 export type RemoteSegmentResult =
-  | { ok: true; value: SearchSegment }
+  | { ok: true; value: Segment }
   | { ok: false; error: { code: string; message: string } }
-
-export interface PlaybackSession {
-  sessionId: string
-  playlistUrl: string
-  expiresAt: number
-  watermark?: { label: string }
-}
 
 export type RemotePlaybackResult =
   | { ok: true; value: PlaybackSession }
   | { ok: false; error: { code: string; message: string } }
-
-export interface AuthStatus {
-  mode: 'device' | 'credential' | 'none'
-  authorized: boolean
-  deviceId?: string
-}
-
-export interface DeviceAuthStart {
-  userCode: string
-  verificationUri: string
-  expiresAt: number
-  interval: number
-}
-
-export interface DeviceAuthPoll {
-  status: 'pending' | 'authorized' | 'expired'
-}
 
 export type RemoteAuthStatusResult =
   | { ok: true; value: AuthStatus }

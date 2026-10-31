@@ -7,28 +7,14 @@ import {
   type CredentialRecord,
 } from '@deepseek-ai/dsh-credentials'
 import { AuthError, readJsonResponse } from './errors.js'
+import type { AuthStatus, DeviceAuthPoll, DeviceAuthStart } from './shared/contracts.js'
+
+export type { AuthStatus, DeviceAuthPoll, DeviceAuthStart } from './shared/contracts.js'
 
 export interface AuthConfig {
   baseUrl: string
   timeoutMs: number
   apiTokenRef: Volatile<string>
-}
-
-export interface AuthStatus {
-  mode: 'device' | 'credential' | 'none'
-  authorized: boolean
-  deviceId?: string
-}
-
-export interface DeviceAuthStart {
-  userCode: string
-  verificationUri: string
-  expiresAt: number
-  interval: number
-}
-
-export interface DeviceAuthPoll {
-  status: 'pending' | 'authorized' | 'expired'
 }
 
 interface DeviceGrant {

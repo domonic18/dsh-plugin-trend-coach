@@ -8,6 +8,10 @@ import type {
   AuthStatus,
   DeviceAuthStart,
   PlaybackSession,
+  SearchResult,
+  Segment,
+} from '../shared/contracts.js'
+import type {
   RemoteAuthStatusResult,
   RemoteDeviceAuthPollResult,
   RemoteDeviceAuthStartResult,
@@ -15,8 +19,6 @@ import type {
   RemoteSearchResult,
   RemoteSegmentResult,
   RemoteSignOutResult,
-  SearchPayload,
-  SearchSegment,
 } from './dsh.js'
 
 export const name = 'trend-coach-client'
@@ -241,7 +243,7 @@ function Panel({
 }: PanelProps): React.ReactElement {
   const [query, setQuery] = React.useState('趋势反转怎么判断')
   const [busy, setBusy] = React.useState(false)
-  const [payload, setPayload] = React.useState<SearchPayload | undefined>(undefined)
+  const [payload, setPayload] = React.useState<SearchResult | undefined>(undefined)
   const [error, setError] = React.useState<string | undefined>(undefined)
 
   const [auth, setAuth] = React.useState<AuthStatus | undefined>(undefined)
@@ -366,7 +368,7 @@ function Panel({
     } else {
       body.push(
         React.createElement('p', { key: 'count' }, `命中 ${payload.segments.length} 个片段`),
-        ...payload.segments.map((segment: SearchSegment) =>
+        ...payload.segments.map((segment: Segment) =>
           React.createElement('button', {
             key: segment.segmentId,
             type: 'button',
@@ -684,7 +686,7 @@ function parseCitation(raw: string): string | undefined {
 
 export function apply(ctx: Context): void {
   ;(globalThis as Record<string, unknown>).__TREND_COACH_CLIENT__ = true
-  console.info('[trend-coach] client plugin loaded (remote spike)')
+  console.debug('[trend-coach] client plugin loaded')
 
   const openPlayer = (params: PlayerParams) => {
     try {
