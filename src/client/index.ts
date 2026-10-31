@@ -29,6 +29,7 @@ const PLAYER_KIND = 'trend-coach-player'
 const CITATION_HOST = 'trend-coach.local'
 const SEGMENT_CODE = /^seg-[A-Za-z0-9._-]+$/
 const SEGMENT_CLIP_SEC = 60
+const MAX_QUERY_LENGTH = 500
 
 const segmentSchema = z.object({
   segmentId: z.string(),
@@ -250,7 +251,7 @@ function Panel({
       if (result.ok) {
         setAuth(result.value)
       } else {
-        setAuthError(`${result.error.code}: ${result.error.message}`)
+        setAuthError(result.error.message)
       }
     } catch (authFailure: unknown) {
       setAuthError(authFailure instanceof Error ? authFailure.message : '授权状态读取失败')
@@ -270,7 +271,7 @@ function Panel({
         const result = await pollDeviceAuth()
         if (cancelled) return
         if (!result.ok) {
-          setAuthError(`${result.error.code}: ${result.error.message}`)
+          setAuthError(result.error.message)
           setDevice(undefined)
           return
         }
@@ -304,7 +305,7 @@ function Panel({
     try {
       const result = await beginDeviceAuth()
       if (result.ok) setDevice(result.value)
-      else setAuthError(`${result.error.code}: ${result.error.message}`)
+      else setAuthError(result.error.message)
     } catch (loginFailure: unknown) {
       setAuthError(loginFailure instanceof Error ? loginFailure.message : '设备授权发起失败')
     }
@@ -316,7 +317,7 @@ function Panel({
     setAuthError(undefined)
     try {
       const result = await signOut()
-      if (!result.ok) setAuthError(`${result.error.code}: ${result.error.message}`)
+      if (!result.ok) setAuthError(result.error.message)
       await refreshAuth()
     } catch (logoutFailure: unknown) {
       setAuthError(logoutFailure instanceof Error ? logoutFailure.message : '退出登录失败')
@@ -325,14 +326,20 @@ function Panel({
   }
 
   const run = async () => {
+    const value = query.trim()
+    if (value.length === 0) {
+      setPayload(undefined)
+      setError('请输入问题')
+      return
+    }
     setBusy(true)
     setError(undefined)
-    const result = await search(query)
+    const result = await search(value)
     if (result.ok) {
       setPayload(result.value)
     } else {
       setPayload(undefined)
-      setError(`${result.error.code}: ${result.error.message}`)
+      setError(result.error.message)
     }
     setBusy(false)
   }
@@ -445,6 +452,7 @@ function Panel({
     React.createElement('div', { style: { display: 'flex', gap: 6 } },
       React.createElement('input', {
         value: query,
+        maxLength: MAX_QUERY_LENGTH,
         onChange: (event: React.ChangeEvent<HTMLInputElement>) => setQuery(event.target.value),
         style: { flex: 1, padding: '4px 6px' },
       }),

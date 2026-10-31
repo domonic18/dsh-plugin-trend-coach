@@ -1,4 +1,4 @@
-import type { Context, Volatile } from '@deepseek-ai/cordis'
+import type { Context, Logger, Volatile } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
@@ -8,6 +8,18 @@ import {
   type DeviceAuthPoll,
   type DeviceAuthStart,
 } from './auth.js'
+import {
+  InvalidResponseError,
+  UpstreamError,
+  isSegmentId,
+  normalizeTopK,
+  optionalCourseId,
+  readJsonResponse,
+  requireQuery,
+  requireSegmentId,
+  toRemoteError,
+  toToolError,
+} from './errors.js'
 
 export const name = 'trend-coach'
 
@@ -54,6 +66,10 @@ interface PlaybackSession {
   expiresAt: number
   watermark?: { label: string }
 }
+
+const MAX_SEGMENT_TEXT = 4000
+const MAX_RELATED_POINTS = 5
+const MAX_TITLE_LENGTH = 200
 
 const outputSchema = {
   type: 'object',
@@ -131,7 +147,11 @@ function isRelatedKnowledgePoint(value: unknown): value is RelatedKnowledgePoint
   const candidate = value as Record<string, unknown>
   return (
     typeof candidate.knowledgePointId === 'string' &&
-    typeof candidate.title === 'string'
+    candidate.knowledgePointId.length > 0 &&
+    candidate.knowledgePointId.length <= 64 &&
+    typeof candidate.title === 'string' &&
+    candidate.title.length > 0 &&
+    candidate.title.length <= MAX_TITLE_LENGTH
   )
 }
 
@@ -139,15 +159,17 @@ function isSegment(value: unknown): value is Segment {
   if (typeof value !== 'object' || value === null) return false
   const candidate = value as Record<string, unknown>
   return (
-    typeof candidate.segmentId === 'string' &&
-    typeof candidate.courseId === 'string' &&
-    typeof candidate.chapterId === 'string' &&
-    typeof candidate.knowledgePointId === 'string' &&
-    typeof candidate.title === 'string' &&
-    typeof candidate.startSec === 'number' &&
-    typeof candidate.endSec === 'number' &&
-    typeof candidate.text === 'string' &&
-    typeof candidate.score === 'number'
+    isSegmentId(candidate.segmentId) &&
+    typeof candidate.courseId === 'string' && candidate.courseId.length > 0 &&
+    typeof candidate.chapterId === 'string' && candidate.chapterId.length > 0 &&
+    typeof candidate.knowledgePointId === 'string' && candidate.knowledgePointId.length > 0 &&
+    typeof candidate.title === 'string' && candidate.title.length > 0
+      && candidate.title.length <= MAX_TITLE_LENGTH &&
+    typeof candidate.startSec === 'number' && Number.isFinite(candidate.startSec) && candidate.startSec >= 0 &&
+    typeof candidate.endSec === 'number' && Number.isFinite(candidate.endSec) && candidate.endSec >= candidate.startSec &&
+    typeof candidate.text === 'string' && candidate.text.length <= MAX_SEGMENT_TEXT &&
+    typeof candidate.score === 'number' && Number.isFinite(candidate.score)
+      && candidate.score >= 0 && candidate.score <= 1
   )
 }
 
@@ -159,8 +181,12 @@ async function searchKnowledge(
   courseId: string | undefined,
   signal: AbortSignal,
 ): Promise<SearchResult> {
-  const body: Record<string, unknown> = { query, topK }
-  if (courseId !== undefined) body.courseId = courseId
+  const normalizedQuery = requireQuery(query)
+  const normalizedTopK = normalizeTopK(topK)
+  const normalizedCourseId = optionalCourseId(courseId)
+
+  const body: Record<string, unknown> = { query: normalizedQuery, topK: normalizedTopK }
+  if (normalizedCourseId !== undefined) body.courseId = normalizedCourseId
 
   const response = await auth.request('/v1/kb/search', {
     method: 'POST',
@@ -168,35 +194,34 @@ async function searchKnowledge(
     body: JSON.stringify(body),
   }, signal)
 
-  if (!response.ok) {
-    throw new Error(`知识库检索失败: HTTP ${response.status} ${response.statusText}`)
-  }
+  if (!response.ok) throw new UpstreamError(response.status)
 
-  const payload: unknown = await response.json()
+  const payload = await readJsonResponse(response)
   if (typeof payload !== 'object' || payload === null) {
-    throw new Error('知识库检索返回了非对象响应')
+    throw new InvalidResponseError('课程服务返回了非对象响应')
   }
 
   const rawSegments = (payload as { segments?: unknown }).segments
   if (!Array.isArray(rawSegments)) {
-    throw new Error('知识库检索响应缺少 segments 数组')
+    throw new InvalidResponseError('课程服务响应缺少片段列表')
   }
 
   const segments = rawSegments.filter(isSegment)
   if (segments.length !== rawSegments.length) {
-    throw new Error('知识库检索响应包含不合法的片段')
+    throw new InvalidResponseError('课程服务响应包含不合法的片段')
   }
 
   const rawRelated = (payload as { relatedKnowledgePoints?: unknown }).relatedKnowledgePoints
   let relatedKnowledgePoints: RelatedKnowledgePoint[] = []
   if (rawRelated !== undefined) {
-    if (!Array.isArray(rawRelated) || !rawRelated.every(isRelatedKnowledgePoint)) {
-      throw new Error('知识库检索响应包含不合法的相关知识点')
+    if (!Array.isArray(rawRelated) || rawRelated.length > MAX_RELATED_POINTS
+      || !rawRelated.every(isRelatedKnowledgePoint)) {
+      throw new InvalidResponseError('课程服务响应包含不合法的相关知识点')
     }
     relatedKnowledgePoints = rawRelated
   }
 
-  return { query, segments, relatedKnowledgePoints }
+  return { query: normalizedQuery, segments, relatedKnowledgePoints }
 }
 
 async function getSegment(
@@ -205,19 +230,18 @@ async function getSegment(
   segmentId: string,
   signal: AbortSignal,
 ): Promise<Segment> {
+  const normalizedSegmentId = requireSegmentId(segmentId)
   const response = await auth.request(
-    `/v1/kb/segments/${encodeURIComponent(segmentId)}`,
+    `/v1/kb/segments/${encodeURIComponent(normalizedSegmentId)}`,
     {},
     signal,
   )
 
-  if (!response.ok) {
-    throw new Error(`片段查询失败: HTTP ${response.status} ${response.statusText}`)
-  }
+  if (!response.ok) throw new UpstreamError(response.status)
 
-  const payload: unknown = await response.json()
-  if (!isSegment(payload)) {
-    throw new Error('片段查询响应不合法')
+  const payload = await readJsonResponse(response)
+  if (!isSegment(payload) || payload.segmentId !== normalizedSegmentId) {
+    throw new InvalidResponseError('课程服务返回的片段信息不合法')
   }
   return payload
 }
@@ -226,13 +250,18 @@ function isPlaybackSession(value: unknown): value is PlaybackSession {
   if (typeof value !== 'object' || value === null) return false
   const candidate = value as Record<string, unknown>
   const watermark = candidate.watermark
-  return (
-    typeof candidate.sessionId === 'string' &&
-    typeof candidate.playlistUrl === 'string' &&
-    typeof candidate.expiresAt === 'number' &&
-    (watermark === undefined ||
-      (typeof watermark === 'object' && watermark !== null && typeof (watermark as Record<string, unknown>).label === 'string'))
-  )
+  if (typeof candidate.sessionId !== 'string' || candidate.sessionId.length === 0) return false
+  if (typeof candidate.playlistUrl !== 'string') return false
+  try {
+    const url = new URL(candidate.playlistUrl)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return false
+  } catch {
+    return false
+  }
+  if (typeof candidate.expiresAt !== 'number' || !Number.isFinite(candidate.expiresAt)) return false
+  return watermark === undefined ||
+    (typeof watermark === 'object' && watermark !== null
+      && typeof (watermark as Record<string, unknown>).label === 'string')
 }
 
 async function createPlaybackSession(
@@ -241,19 +270,18 @@ async function createPlaybackSession(
   segmentId: string,
   signal: AbortSignal,
 ): Promise<PlaybackSession> {
+  const normalizedSegmentId = requireSegmentId(segmentId)
   const response = await auth.request('/v1/playback/sessions', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ segmentId }),
+    body: JSON.stringify({ segmentId: normalizedSegmentId }),
   }, signal)
 
-  if (!response.ok) {
-    throw new Error(`播放会话创建失败: HTTP ${response.status} ${response.statusText}`)
-  }
+  if (!response.ok) throw new UpstreamError(response.status)
 
-  const payload: unknown = await response.json()
+  const payload = await readJsonResponse(response)
   if (!isPlaybackSession(payload)) {
-    throw new Error('播放会话响应不合法')
+    throw new InvalidResponseError('课程服务返回的播放会话不合法')
   }
   return payload
 }
@@ -261,46 +289,61 @@ async function createPlaybackSession(
 class TrendCoachService extends TypertRemoteService {
   private readonly config: Config
   private readonly auth: AuthManager
+  private readonly logger: Logger
 
   constructor(ctx: Context, config: Config, auth: AuthManager) {
     super(ctx, 'trendCoach')
     this.config = config
     this.auth = auth
+    this.logger = ctx.logger('trend-coach')
+  }
+
+  /** 失败只记录操作名与错误类型，不记录 token、设备 ID 或 query 原文。 */
+  private async invoke<T>(operation: string, run: () => Promise<T>): Promise<T> {
+    try {
+      return await run()
+    } catch (error) {
+      this.logger.warn('%s failed: %s', operation, error instanceof Error ? error.name : typeof error)
+      throw toRemoteError(error, operation)
+    }
   }
 
   @Remote
   async search(query: string, topK: number, signal: AbortSignal): Promise<SearchResult> {
-    return await searchKnowledge(this.auth, this.config, query, topK, undefined, signal)
+    return await this.invoke('知识库检索', () =>
+      searchKnowledge(this.auth, this.config, query, topK, undefined, signal))
   }
 
   @Remote
   async getSegment(segmentId: string, signal: AbortSignal): Promise<Segment> {
-    return await getSegment(this.auth, this.config, segmentId, signal)
+    return await this.invoke('片段查询', () =>
+      getSegment(this.auth, this.config, segmentId, signal))
   }
 
   @Remote
   async createPlaybackSession(segmentId: string, signal: AbortSignal): Promise<PlaybackSession> {
-    return await createPlaybackSession(this.auth, this.config, segmentId, signal)
+    return await this.invoke('播放会话创建', () =>
+      createPlaybackSession(this.auth, this.config, segmentId, signal))
   }
 
   @Remote
   async authStatus(): Promise<AuthStatus> {
-    return await this.auth.status()
+    return await this.invoke('授权状态读取', () => this.auth.status())
   }
 
   @Remote
   async beginDeviceAuth(signal: AbortSignal): Promise<DeviceAuthStart> {
-    return await this.auth.beginDeviceAuth(signal)
+    return await this.invoke('设备授权发起', () => this.auth.beginDeviceAuth(signal))
   }
 
   @Remote
   async pollDeviceAuth(signal: AbortSignal): Promise<DeviceAuthPoll> {
-    return await this.auth.pollDeviceAuth(signal)
+    return await this.invoke('设备授权轮询', () => this.auth.pollDeviceAuth(signal))
   }
 
   @Remote
   async signOut(): Promise<{ signedOut: true }> {
-    await this.auth.signOut()
+    await this.invoke('退出登录', () => this.auth.signOut())
     return { signedOut: true }
   }
 }
@@ -331,7 +374,11 @@ export function apply(ctx: Context, config: Config): void {
           courseId?: string
           topK?: number
         }
-        return await searchKnowledge(auth, config, query, topK ?? 5, courseId, exec.signal)
+        try {
+          return await searchKnowledge(auth, config, query, topK ?? 5, courseId, exec.signal)
+        } catch (error) {
+          throw toToolError(error, '知识库检索')
+        }
       },
     }),
   )

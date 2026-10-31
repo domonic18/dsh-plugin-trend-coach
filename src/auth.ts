@@ -6,6 +6,7 @@ import {
   type CredentialProvider,
   type CredentialRecord,
 } from '@deepseek-ai/dsh-credentials'
+import { AuthError, readJsonResponse } from './errors.js'
 
 export interface AuthConfig {
   baseUrl: string
@@ -40,16 +41,6 @@ interface DeviceGrant {
 interface TokenState {
   token: string
   deviceId?: string
-}
-
-export class AuthError extends Error {
-  readonly code: 'UNAUTHORIZED' | 'AUTH_EXPIRED' | 'DEVICE_MISMATCH'
-
-  constructor(message: string, code: AuthError['code']) {
-    super(message)
-    this.name = 'AuthError'
-    this.code = code
-  }
 }
 
 class HttpError extends Error {
@@ -296,6 +287,6 @@ export class AuthManager {
       signal: AbortSignal.any(signals),
     })
     if (!response.ok) throw new HttpError(response.status)
-    return await response.json()
+    return await readJsonResponse(response, '授权服务')
   }
 }
