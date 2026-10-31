@@ -6,17 +6,26 @@ import { createTypertRemoteInfo } from '@deepseek-ai/dsh-typert-protocol/remote-
 import type { TypertRemoteSpec } from '@deepseek-ai/dsh-typert-protocol/types'
 import type {
   AuthStatus,
+  CatalogCourse,
+  CatalogCourseSummary,
   DeviceAuthStart,
+  KnowledgePointDetail,
   PlaybackSession,
+  ProgressResult,
   SearchResult,
   Segment,
 } from '../shared/contracts.js'
+import { CatalogPanel } from './catalog.js'
 import type {
   RemoteAuthStatusResult,
+  RemoteCatalogCourseResult,
+  RemoteCatalogCoursesResult,
   RemoteDeviceAuthPollResult,
   RemoteDeviceAuthStartResult,
   RemoteEventsConsentResult,
+  RemoteKnowledgePointResult,
   RemotePlaybackResult,
+  RemoteProgressResult,
   RemoteReportResult,
   RemoteSearchResult,
   RemoteSegmentResult,
@@ -28,7 +37,9 @@ export const name = 'trend-coach-client'
 export const inject = ['slots', 'sidebarRightTabs', 'sidebarRight', 'remote']
 
 const TAB_ID = 'dsh-plugin-trend-coach'
+const CATALOG_ID = 'dsh-plugin-trend-coach-catalog'
 const PLAYER_ID = 'dsh-plugin-trend-coach-player'
+const CATALOG_KIND = 'trend-coach-catalog'
 const PLAYER_KIND = 'trend-coach-player'
 const CITATION_HOST = 'trend-coach.local'
 const SEGMENT_CODE = /^seg-[A-Za-z0-9._-]+$/
@@ -91,6 +102,59 @@ const signOutSchema = z.object({ signedOut: z.literal(true) })
 const eventsConsentSchema = z.object({ consent: z.boolean() })
 
 const reportSchema = z.object({ reported: z.literal(true) })
+
+const catalogCourseSummarySchema = z.object({
+  courseId: z.string(),
+  title: z.string(),
+  chapterCount: z.number(),
+  knowledgePointCount: z.number(),
+  completedCount: z.number(),
+})
+
+const catalogKnowledgePointSchema = z.object({
+  knowledgePointId: z.string(),
+  title: z.string(),
+  position: z.number(),
+  segmentId: z.string().optional(),
+  watchedSec: z.number(),
+  completed: z.boolean(),
+})
+
+const catalogChapterSchema = z.object({
+  chapterId: z.string(),
+  title: z.string(),
+  position: z.number(),
+  knowledgePoints: z.array(catalogKnowledgePointSchema),
+})
+
+const catalogCourseSchema = z.object({
+  courseId: z.string(),
+  title: z.string(),
+  chapters: z.array(catalogChapterSchema),
+})
+
+const knowledgePointArticleSchema = z.object({
+  markdown: z.string(),
+  version: z.number(),
+  publishedAt: z.number(),
+})
+
+const knowledgePointDetailSchema = z.object({
+  knowledgePointId: z.string(),
+  courseId: z.string(),
+  chapterId: z.string(),
+  title: z.string(),
+  article: z.union([knowledgePointArticleSchema, z.null()]),
+  segmentId: z.string().optional(),
+  adjacentKnowledgePoints: z.array(relatedKnowledgePointSchema),
+})
+
+const progressSchema = z.object({
+  knowledgePointId: z.string(),
+  watchedSec: z.number(),
+  completed: z.boolean(),
+  updatedAt: z.number(),
+})
 
 const codec = (typeSymbol: string, create: () => z.ZodType) => ({
   mode: 'strict' as const,
@@ -155,6 +219,78 @@ const spec: TypertRemoteSpec = {
         'dsh-plugin-trend-coach#trendCoach/createPlaybackSession:result',
         () => playbackSessionSchema,
       ),
+    },
+    'trendCoach/catalogCourses': {
+      service: 'trendCoach',
+      invocation: { kind: 'direct' },
+      parameters: [],
+      cancellation: { parameter: 'signal' },
+      result: codec(
+        'dsh-plugin-trend-coach#trendCoach/catalogCourses:result',
+        () => z.object({ courses: z.array(catalogCourseSummarySchema) }),
+      ),
+    },
+    'trendCoach/catalogCourse': {
+      service: 'trendCoach',
+      invocation: { kind: 'direct' },
+      parameters: [
+        {
+          name: 'courseId',
+          wire: 'courseId',
+          source: 'json',
+          codec: codec('dsh-plugin-trend-coach#trendCoach/catalogCourse:courseId', () => z.string()),
+          strictCodec: codec('dsh-plugin-trend-coach#trendCoach/catalogCourse:courseId', () => z.string()),
+        },
+      ],
+      cancellation: { parameter: 'signal' },
+      result: codec('dsh-plugin-trend-coach#trendCoach/catalogCourse:result', () => catalogCourseSchema),
+    },
+    'trendCoach/knowledgePoint': {
+      service: 'trendCoach',
+      invocation: { kind: 'direct' },
+      parameters: [
+        {
+          name: 'knowledgePointId',
+          wire: 'knowledgePointId',
+          source: 'json',
+          codec: codec('dsh-plugin-trend-coach#trendCoach/knowledgePoint:knowledgePointId', () => z.string()),
+          strictCodec: codec('dsh-plugin-trend-coach#trendCoach/knowledgePoint:knowledgePointId', () => z.string()),
+        },
+      ],
+      cancellation: { parameter: 'signal' },
+      result: codec(
+        'dsh-plugin-trend-coach#trendCoach/knowledgePoint:result',
+        () => knowledgePointDetailSchema,
+      ),
+    },
+    'trendCoach/reportProgress': {
+      service: 'trendCoach',
+      invocation: { kind: 'direct' },
+      parameters: [
+        {
+          name: 'knowledgePointId',
+          wire: 'knowledgePointId',
+          source: 'json',
+          codec: codec('dsh-plugin-trend-coach#trendCoach/reportProgress:knowledgePointId', () => z.string()),
+          strictCodec: codec('dsh-plugin-trend-coach#trendCoach/reportProgress:knowledgePointId', () => z.string()),
+        },
+        {
+          name: 'watchedSec',
+          wire: 'watchedSec',
+          source: 'json',
+          codec: codec('dsh-plugin-trend-coach#trendCoach/reportProgress:watchedSec', () => z.number()),
+          strictCodec: codec('dsh-plugin-trend-coach#trendCoach/reportProgress:watchedSec', () => z.number()),
+        },
+        {
+          name: 'completed',
+          wire: 'completed',
+          source: 'json',
+          codec: codec('dsh-plugin-trend-coach#trendCoach/reportProgress:completed', () => z.boolean()),
+          strictCodec: codec('dsh-plugin-trend-coach#trendCoach/reportProgress:completed', () => z.boolean()),
+        },
+      ],
+      cancellation: { parameter: 'signal' },
+      result: codec('dsh-plugin-trend-coach#trendCoach/reportProgress:result', () => progressSchema),
     },
     'trendCoach/authStatus': {
       service: 'trendCoach',
@@ -261,6 +397,14 @@ const spec: TypertRemoteSpec = {
 interface TrendCoachRemote {
   getSegment(segmentId: string): Promise<RemoteSegmentResult>
   createPlaybackSession(segmentId: string): Promise<RemotePlaybackResult>
+  catalogCourses(): Promise<RemoteCatalogCoursesResult>
+  catalogCourse(courseId: string): Promise<RemoteCatalogCourseResult>
+  knowledgePoint(knowledgePointId: string): Promise<RemoteKnowledgePointResult>
+  reportProgress(
+    knowledgePointId: string,
+    watchedSec: number,
+    completed: boolean,
+  ): Promise<RemoteProgressResult>
   authStatus(): Promise<RemoteAuthStatusResult>
   beginDeviceAuth(): Promise<RemoteDeviceAuthStartResult>
   pollDeviceAuth(): Promise<RemoteDeviceAuthPollResult>
@@ -273,6 +417,7 @@ interface TrendCoachRemote {
 
 interface PlayerParams {
   segmentId?: string
+  knowledgePointId?: string
   title?: string
   startSec?: number
   endSec?: number
@@ -308,6 +453,11 @@ interface PanelProps {
 interface PlayerProps {
   useTabInfo?: TabInfoHook
   reportPlayerStarted?: (startupMs: number, autoplayBlocked: boolean) => void
+  reportProgress?: (
+    knowledgePointId: string,
+    watchedSec: number,
+    completed: boolean,
+  ) => Promise<RemoteProgressResult> | void
 }
 
 function displayTitle(title: string | undefined, id: string): string {
@@ -529,6 +679,7 @@ function Panel({
               void reportCitationClick(segment.segmentId)
               void openSegment({
                 segmentId: segment.segmentId,
+                knowledgePointId: segment.knowledgePointId,
                 title: segment.title,
                 startSec: segment.startSec,
                 endSec: segment.endSec,
@@ -657,19 +808,27 @@ function isHlsSource(src: string): boolean {
   return /\.m3u8(?:$|\?)/i.test(src)
 }
 
-function Player({ useTabInfo, reportPlayerStarted }: PlayerProps): React.ReactElement {
+function Player({ useTabInfo, reportPlayerStarted, reportProgress }: PlayerProps): React.ReactElement {
   const info = useTabInfo === undefined ? undefined : useTabInfo()
   const navigation = info?.tab.navigation
   const params = (navigation?.params ?? {}) as PlayerParams
   const revision = navigation?.revision ?? 0
   const startSec = typeof params.startSec === 'number' ? params.startSec : undefined
   const endSec = typeof params.endSec === 'number' ? params.endSec : undefined
+  const knowledgePointId = typeof params.knowledgePointId === 'string' && params.knowledgePointId.length > 0
+    ? params.knowledgePointId
+    : undefined
   const src = params.src
 
   const videoRef = React.useRef<HTMLVideoElement | null>(null)
   const startedAtRef = React.useRef(Date.now())
   const reportedRef = React.useRef<string | undefined>(undefined)
   const gestureRef = React.useRef(false)
+  const watchedRef = React.useRef(0)
+  const lastTimeRef = React.useRef<number | undefined>(undefined)
+  const reportedSecRef = React.useRef(0)
+  const completedRef = React.useRef(false)
+  const reportedCompletedRef = React.useRef(false)
   const [current, setCurrent] = React.useState(0)
   const [duration, setDuration] = React.useState(0)
   const [ready, setReady] = React.useState(false)
@@ -680,6 +839,27 @@ function Player({ useTabInfo, reportPlayerStarted }: PlayerProps): React.ReactEl
   const clipEnd = startSec === undefined
     ? undefined
     : Math.min(endSec ?? startSec + SEGMENT_CLIP_SEC, startSec + SEGMENT_CLIP_SEC)
+  const progressKey = `${knowledgePointId ?? ''}#${revision}#${src ?? ''}`
+
+  // 进度是业务写入，失败不影响播放；30 秒节流，暂停/结束/片段播完时强制上报。
+  const flushProgress = React.useCallback((completed: boolean, force = false) => {
+    if (knowledgePointId === undefined) return
+    if (completed) completedRef.current = true
+    const watchedSec = Math.floor(watchedRef.current)
+    if (watchedSec === 0 && !completedRef.current) return
+    if (!force && watchedSec - reportedSecRef.current < 30 && !completedRef.current) return
+    if (watchedSec === reportedSecRef.current && completedRef.current === reportedCompletedRef.current) return
+    reportedSecRef.current = watchedSec
+    reportedCompletedRef.current = completedRef.current
+    try {
+      const pending = reportProgress?.(knowledgePointId, watchedSec, completedRef.current)
+      if (pending !== undefined) void pending.catch(() => undefined)
+    } catch {
+      // 进度上报失败只影响进度，不影响播放。
+    }
+  }, [knowledgePointId, reportProgress])
+  const flushRef = React.useRef(flushProgress)
+  flushRef.current = flushProgress
 
   React.useEffect(() => {
     setPausedAtClip(false)
@@ -689,7 +869,14 @@ function Player({ useTabInfo, reportPlayerStarted }: PlayerProps): React.ReactEl
     startedAtRef.current = Date.now()
     reportedRef.current = undefined
     gestureRef.current = false
+    watchedRef.current = 0
+    lastTimeRef.current = undefined
+    reportedSecRef.current = 0
+    completedRef.current = false
+    reportedCompletedRef.current = false
   }, [startSec, revision, src, params.error])
+
+  React.useEffect(() => () => flushRef.current(false, true), [progressKey])
 
   React.useEffect(() => {
     const video = videoRef.current
@@ -740,10 +927,22 @@ function Player({ useTabInfo, reportPlayerStarted }: PlayerProps): React.ReactEl
 
   const onTimeUpdate = (event: React.SyntheticEvent<HTMLVideoElement>) => {
     const video = event.currentTarget
-    setCurrent(video.currentTime)
-    if (clipEnd !== undefined && !video.paused && video.currentTime >= clipEnd) {
+    const now = video.currentTime
+    const previous = lastTimeRef.current
+    lastTimeRef.current = now
+    if (!video.paused && previous !== undefined && now > previous) {
+      const delta = now - previous
+      // 跳转或倍速造成的突变不计入观看时长。
+      if (delta < 2) watchedRef.current += delta
+    }
+    setCurrent(now)
+    if (!video.paused && watchedRef.current - reportedSecRef.current >= 30) {
+      flushProgress(false)
+    }
+    if (clipEnd !== undefined && !video.paused && now >= clipEnd) {
       video.pause()
       setPausedAtClip(true)
+      flushProgress(true, true)
     }
   }
 
@@ -840,6 +1039,8 @@ function Player({ useTabInfo, reportPlayerStarted }: PlayerProps): React.ReactEl
         onDurationChange: onMetadata,
         onPlaying,
         onTimeUpdate,
+        onPause: () => flushProgress(false, true),
+        onEnded: () => flushProgress(true, true),
         onError: () => setMediaError('视频加载失败'),
       }),
       React.createElement('div', { style: watermarkStyle }, `${watermark} · ${Math.floor(current)}s`),
@@ -911,16 +1112,35 @@ export function apply(ctx: Context): void {
 
   const openCitation = async (remote: TrendCoachRemote, segmentId: string): Promise<void> => {
     void remote.reportCitationClick(segmentId)
+    await openSegmentById(remote, segmentId, {})
+  }
+
+  // 体系页只拿到 segmentId，起止秒必须回到 getSegment 取权威值。
+  const openKnowledgePointSegment = async (
+    remote: TrendCoachRemote,
+    segmentId: string,
+    knowledgePointId: string,
+    title: string,
+  ): Promise<void> => {
+    await openSegmentById(remote, segmentId, { knowledgePointId, title })
+  }
+
+  const openSegmentById = async (
+    remote: TrendCoachRemote,
+    segmentId: string,
+    extra: { knowledgePointId?: string; title?: string },
+  ): Promise<void> => {
     const result = await remote.getSegment(segmentId)
     if (!result.ok) {
       console.error('[trend-coach] getSegment failed', result.error)
-      openPlayer({ segmentId, error: '引用片段不可用，可能已下架' })
+      openPlayer({ segmentId, ...extra, error: '引用片段不可用，可能已下架' })
       return
     }
     const segment = result.value
     await openSegment(remote, {
       segmentId: segment.segmentId,
-      title: segment.title,
+      knowledgePointId: extra.knowledgePointId ?? segment.knowledgePointId,
+      title: extra.title ?? segment.title,
       startSec: segment.startSec,
       endSec: segment.endSec,
     })
@@ -951,11 +1171,34 @@ export function apply(ctx: Context): void {
 
         scoped.slots.inject('sidebar.right.pane.tab', () => scoped.slots.register({
           name: 'sidebar.right.pane.tab',
+          key: CATALOG_ID,
+          inject: () => ({
+            authStatus: () => scoped.remote.trendCoach.authStatus(),
+            beginDeviceAuth: () => scoped.remote.trendCoach.beginDeviceAuth(),
+            pollDeviceAuth: () => scoped.remote.trendCoach.pollDeviceAuth(),
+            catalogCourses: () => scoped.remote.trendCoach.catalogCourses(),
+            catalogCourse: (courseId: string) => scoped.remote.trendCoach.catalogCourse(courseId),
+            knowledgePoint: (knowledgePointId: string) =>
+              scoped.remote.trendCoach.knowledgePoint(knowledgePointId),
+            openSegment: (target: { segmentId: string; knowledgePointId?: string; title?: string }) =>
+              openKnowledgePointSegment(
+                scoped.remote.trendCoach,
+                target.segmentId,
+                target.knowledgePointId ?? '',
+                target.title ?? '',
+              ),
+          }),
+        }, CatalogPanel))
+
+        scoped.slots.inject('sidebar.right.pane.tab', () => scoped.slots.register({
+          name: 'sidebar.right.pane.tab',
           key: PLAYER_ID,
           inject: () => ({
             reportPlayerStarted: (startupMs: number, autoplayBlocked: boolean) => {
               void scoped.remote.trendCoach.reportPlayerStarted(startupMs, autoplayBlocked)
             },
+            reportProgress: (knowledgePointId: string, watchedSec: number, completed: boolean) =>
+              scoped.remote.trendCoach.reportProgress(knowledgePointId, watchedSec, completed),
           }),
         }, Player))
 
@@ -1007,6 +1250,18 @@ export function apply(ctx: Context): void {
       description: () => '课程问答与视频溯源',
     }],
   }), 'trend-coach tab type')
+
+  ctx.effect(() => ctx.sidebarRightTabs.register({
+    id: CATALOG_ID,
+    kind: CATALOG_KIND,
+    title: () => '课程体系',
+    guide: [{
+      id: CATALOG_ID,
+      order: 190,
+      title: () => '课程体系',
+      description: () => '课程结构、知识点文章与学习进度',
+    }],
+  }), 'trend-coach catalog tab type')
 
   ctx.effect(() => ctx.sidebarRightTabs.register({
     id: PLAYER_ID,

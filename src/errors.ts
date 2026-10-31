@@ -3,12 +3,15 @@ import { remoteErrorOf, RemoteError } from '@deepseek-ai/dsh-typert-protocol'
 export const MAX_QUERY_LENGTH = 500
 export const MAX_COURSE_ID_LENGTH = 64
 export const MAX_SEGMENT_ID_LENGTH = 80
+export const MAX_KNOWLEDGE_POINT_ID_LENGTH = 64
+export const MAX_WATCHED_SEC = 86400
 export const DEFAULT_TOP_K = 5
 export const MAX_TOP_K = 20
 export const MAX_RESPONSE_BYTES = 512 * 1024
 
 const COURSE_ID_PATTERN = /^[A-Za-z0-9._-]+$/
 const SEGMENT_ID_PATTERN = /^seg-[A-Za-z0-9._-]+$/
+const KNOWLEDGE_POINT_ID_PATTERN = /^[A-Za-z0-9._-]+$/
 
 export class InputError extends Error {
   constructor(message: string) {
@@ -122,6 +125,34 @@ export function normalizeTopK(value: unknown): number {
 
 export function requireSegmentId(value: unknown): string {
   if (!isSegmentId(value)) throw new InputError('片段 ID 格式不合法')
+  return value
+}
+
+export function requireCourseId(value: unknown): string {
+  if (typeof value !== 'string' || value.length === 0
+    || value.length > MAX_COURSE_ID_LENGTH || !COURSE_ID_PATTERN.test(value)) {
+    throw new InputError('课程 ID 格式不合法')
+  }
+  return value
+}
+
+export function requireKnowledgePointId(value: unknown): string {
+  if (typeof value !== 'string' || value.length === 0
+    || value.length > MAX_KNOWLEDGE_POINT_ID_LENGTH || !KNOWLEDGE_POINT_ID_PATTERN.test(value)) {
+    throw new InputError('知识点 ID 格式不合法')
+  }
+  return value
+}
+
+export function requireWatchedSec(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0 || value > MAX_WATCHED_SEC) {
+    throw new InputError(`观看时长必须是 0–${MAX_WATCHED_SEC} 的整数秒`)
+  }
+  return value
+}
+
+export function requireCompleted(value: unknown): boolean {
+  if (typeof value !== 'boolean') throw new InputError('完成状态必须是布尔值')
   return value
 }
 

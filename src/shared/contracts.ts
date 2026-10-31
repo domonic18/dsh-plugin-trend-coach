@@ -52,6 +52,64 @@ export interface EventsConsent {
   consent: boolean
 }
 
+export interface CatalogCourseSummary {
+  courseId: string
+  title: string
+  chapterCount: number
+  knowledgePointCount: number
+  completedCount: number
+}
+
+export interface CatalogKnowledgePoint {
+  knowledgePointId: string
+  title: string
+  position: number
+  segmentId?: string
+  watchedSec: number
+  completed: boolean
+}
+
+export interface CatalogChapter {
+  chapterId: string
+  title: string
+  position: number
+  knowledgePoints: CatalogKnowledgePoint[]
+}
+
+export interface CatalogCourse {
+  courseId: string
+  title: string
+  chapters: CatalogChapter[]
+}
+
+export interface KnowledgePointArticle {
+  markdown: string
+  version: number
+  publishedAt: number
+}
+
+export interface KnowledgePointDetail {
+  knowledgePointId: string
+  courseId: string
+  chapterId: string
+  title: string
+  article: KnowledgePointArticle | null
+  segmentId?: string
+  adjacentKnowledgePoints: RelatedKnowledgePoint[]
+}
+
+export interface ProgressResult {
+  knowledgePointId: string
+  watchedSec: number
+  completed: boolean
+  updatedAt: number
+}
+
 export const MAX_SEGMENT_TEXT = 4000
 export const MAX_RELATED_POINTS = 5
 export const MAX_TITLE_LENGTH = 200
+export const MAX_COURSES = 50
+export const MAX_CHAPTERS = 50
+export const MAX_KNOWLEDGE_POINTS = 1000
+export const MAX_ARTICLE_CHARS = 20000
+export const MAX_WATCHED_SEC = 86400

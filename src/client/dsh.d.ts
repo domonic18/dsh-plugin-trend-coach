@@ -1,10 +1,14 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type {
   AuthStatus,
+  CatalogCourse,
+  CatalogCourseSummary,
   DeviceAuthPoll,
   DeviceAuthStart,
   EventsConsent,
+  KnowledgePointDetail,
   PlaybackSession,
+  ProgressResult,
   SearchResult,
   Segment,
 } from '../shared/contracts.js'
@@ -45,6 +49,22 @@ export type RemoteReportResult =
   | { ok: true; value: { reported: true } }
   | { ok: false; error: { code: string; message: string } }
 
+export type RemoteCatalogCoursesResult =
+  | { ok: true; value: { courses: CatalogCourseSummary[] } }
+  | { ok: false; error: { code: string; message: string } }
+
+export type RemoteCatalogCourseResult =
+  | { ok: true; value: CatalogCourse }
+  | { ok: false; error: { code: string; message: string } }
+
+export type RemoteKnowledgePointResult =
+  | { ok: true; value: KnowledgePointDetail }
+  | { ok: false; error: { code: string; message: string } }
+
+export type RemoteProgressResult =
+  | { ok: true; value: ProgressResult }
+  | { ok: false; error: { code: string; message: string } }
+
 interface SlotsService {
   inject(key: string, callback: () => void | (() => void)): void
   register(options: Record<string, unknown>, component: unknown): () => void
@@ -82,6 +102,10 @@ interface ClientRemoteService {
     setEventConsent(consent: boolean): Promise<RemoteEventsConsentResult>
     reportCitationClick(segmentId: string): Promise<RemoteReportResult>
     reportPlayerStarted(startupMs: number, autoplayBlocked: boolean): Promise<RemoteReportResult>
+    catalogCourses(): Promise<RemoteCatalogCoursesResult>
+    catalogCourse(courseId: string): Promise<RemoteCatalogCourseResult>
+    knowledgePoint(knowledgePointId: string): Promise<RemoteKnowledgePointResult>
+    reportProgress(knowledgePointId: string, watchedSec: number, completed: boolean): Promise<RemoteProgressResult>
     signOut(): Promise<RemoteSignOutResult>
   }
 }

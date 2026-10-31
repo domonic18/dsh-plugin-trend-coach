@@ -4,16 +4,24 @@ import type { AuthManager } from '../auth.js'
 import { normalizeTopK, toRemoteError } from '../errors.js'
 import type {
   AuthStatus,
+  CatalogCourse,
+  CatalogCourseSummary,
   DeviceAuthPoll,
   DeviceAuthStart,
   EventsConsent,
+  KnowledgePointDetail,
   PlaybackSession,
+  ProgressResult,
   SearchResult,
   Segment,
 } from '../shared/contracts.js'
 import {
   createPlaybackSession,
+  getCatalogCourse,
+  getKnowledgePoint,
   getSegment,
+  listCourses,
+  reportProgress as putProgress,
   searchKnowledge,
 } from './cloud-client.js'
 import type { EventReporter } from './events.js'
@@ -59,6 +67,38 @@ export class TrendCoachService extends TypertRemoteService {
   async createPlaybackSession(segmentId: string, signal: AbortSignal): Promise<PlaybackSession> {
     return await this.invoke('播放会话创建', () =>
       createPlaybackSession(this.auth, segmentId, signal))
+  }
+
+  @Remote
+  async catalogCourses(signal: AbortSignal): Promise<{ courses: CatalogCourseSummary[] }> {
+    return await this.invoke('课程列表读取', () => listCourses(this.auth, signal))
+  }
+
+  @Remote
+  async catalogCourse(courseId: string, signal: AbortSignal): Promise<CatalogCourse> {
+    return await this.invoke('课程结构读取', () => getCatalogCourse(this.auth, courseId, signal))
+  }
+
+  @Remote
+  async knowledgePoint(knowledgePointId: string, signal: AbortSignal): Promise<KnowledgePointDetail> {
+    return await this.invoke('知识点读取', () =>
+      getKnowledgePoint(this.auth, knowledgePointId, signal))
+  }
+
+  /** 进度是业务写入，失败只记 debug，不阻塞播放。 */
+  @Remote
+  async reportProgress(
+    knowledgePointId: string,
+    watchedSec: number,
+    completed: boolean,
+    signal: AbortSignal,
+  ): Promise<ProgressResult> {
+    try {
+      return await putProgress(this.auth, knowledgePointId, watchedSec, completed, signal)
+    } catch (error) {
+      this.logger.debug('学习进度上报失败: %s', error instanceof Error ? error.name : typeof error)
+      throw toRemoteError(error, '学习进度上报')
+    }
   }
 
   @Remote
