@@ -195,8 +195,9 @@ cordis.patch.yml      bundle patch（随包发布）
 
 1. `npm run typecheck`
 2. `npm run build`
-3. `npm run mock` + 插件在 dsh 中冒烟（Remote 挂载、检索、引用定位）
-4. 涉及打包/依赖/manifest 时：`npm pack` 后在全新 profile 安装验证
+3. `npm test`：Host 边界、不可信文本、mock 云端契约与发布包清单
+4. `npm run mock` + 插件在 dsh 中冒烟（Remote 挂载、检索、引用定位）
+5. 涉及打包/依赖/manifest 时：`npm pack` 后在全新 profile 安装验证
 
 **发布检查**
 

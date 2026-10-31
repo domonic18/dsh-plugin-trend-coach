@@ -27,6 +27,7 @@
 ```bash
 npm run typecheck                     # tsc strict
 npm run build                         # Host tsc + Client esbuild → lib/
+npm test                              # 构建后跑 Host 边界/契约/打包断言
 npm run mock                          # mock KB + video @ 127.0.0.1:3939
 npm pack                              # 生成安装包（*.tgz 已 gitignore）
 npx --yes @deepseek-ai/dsh@0.2.1-rc.5 --profile <name> --port <port> --no-open
@@ -40,6 +41,7 @@ npx --yes @deepseek-ai/dsh@0.2.1-rc.5 --profile <name> --port <port> --no-open
 - `src/untrusted.ts`：Host 不可信文本处理（固定边界包裹、控制字符剥离、边界伪造转义）
 - `src/client/index.ts`：Browser 半（Remote spec、右栏面板含设备登录、播放器、引用拦截）
 - `scripts/build-client.mjs`：Client bundle 构建与 `__ModuleLoader__` 包装
+- `test/`：Host 边界、不可信文本、mock 云端契约与发布包断言（`npm test`）
 - `cordis.patch.yml`：bundle patch，注入插件配置
 - `spike/`：mock KB、fixtures、测试视频（不随包发布）
 
@@ -56,4 +58,4 @@ npx --yes @deepseek-ai/dsh@0.2.1-rc.5 --profile <name> --port <port> --no-open
 
 ## 完成定义
 
-`npm run typecheck` 与 `npm run build` 通过；mock 下 Remote 挂载、检索、引用点击定位可用；涉及打包时在全新 profile 安装验证；相关文档已同步。
+`npm run typecheck`、`npm run build`、`npm test` 通过；mock 下 Remote 挂载、检索、引用点击定位可用；涉及打包时在全新 profile 安装验证；相关文档已同步。

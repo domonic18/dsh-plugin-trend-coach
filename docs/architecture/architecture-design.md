@@ -503,6 +503,7 @@ src/
 scripts/build-client.mjs     # esbuild → lib/client.js（__ModuleLoader__ 包装）
 cordis.patch.yml             # bundle patch：插入插件配置
 spike/                       # mock KB、fixtures、测试视频
+test/                        # Host 边界、不可信文本、mock 契约、发布包断言
 docs/                        # 需求、架构、规范
 ```
 
@@ -516,18 +517,21 @@ docs/                        # 需求、架构、规范
 
 1. `npm run typecheck`
 2. `npm run build`
-3. 本地 mock：`npm run mock` + dsh 新 profile 安装 tarball
-4. 浏览器冒烟：面板检索、Remote 挂载、引用点击、seek 定位
-5. `npm pack` 后在全新 profile 安装，确认 bundle 注册与双半加载
+3. `npm test`（Host 边界、不可信文本、mock 云端契约、打包清单）
+4. 本地 mock：`npm run mock` + dsh 新 profile 安装 tarball
+5. 浏览器冒烟：面板检索、Remote 挂载、引用点击、seek 定位
+6. `npm pack` 后在全新 profile 安装，确认 bundle 注册与双半加载
 
 **分层策略**
 
 | 层级 | 内容 | 状态 |
 |---|---|---|
 | 类型/构建 | tsc strict + esbuild | 已有 |
-| 契约 | 工具/Remote/云端响应 schema 校验 | 部分（Host 手写校验） |
-| 集成 | mock KB + 插件 E2E | 手工验证，M2 脚本化 |
-| 兼容 | dsh 版本矩阵（最低支持版本 + 当前版） | M2 建立 |
+| 契约 | 工具/Remote/云端响应 schema 校验 | Host 手写校验 + `test/*.test.mjs` 断言 |
+| 集成 | mock KB + 插件 E2E | mock 六接口契约已脚本化；浏览器 E2E 仍手工 |
+| 兼容 | dsh 版本矩阵（最低支持版本 + 当前版） | `engines`/peer 已脚本断言；多版本矩阵待 M2 末建立 |
+
+**契约测试（2026-10-31）**：`npm test` 启动独立端口的 mock，覆盖设备码授权/轮换/设备绑定、检索与空召回、非法入参、片段详情、播放会话与签名 HLS、Range、401 过期；同时断言 Host 入参/响应边界、错误映射、不可信文本处理与发布包清单。浏览器内的 Remote 挂载、引用点击与播放定位仍按第 4–6 项手工冒烟。
 
 **发布前检查**：版本号、peer 精确版本、`files` 清单、无凭据、tarball 安装冒烟、PRD/架构/规范同步。
 
