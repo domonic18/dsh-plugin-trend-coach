@@ -467,8 +467,20 @@ const server = createServer(async (request, response) => {
     return
   }
 
-  const topK = Number.isInteger(payload.topK) ? Math.min(Math.max(payload.topK, 1), 20) : 5
-  const segments = search({ query, courseId: payload.courseId, topK })
+  const topK = payload.topK === undefined ? 5 : payload.topK
+  if (!Number.isInteger(topK) || topK < 1 || topK > 20) {
+    json(response, 400, { error: 'topK must be an integer between 1 and 20' })
+    return
+  }
+
+  const courseId = payload.courseId
+  if (courseId !== undefined
+    && (typeof courseId !== 'string' || !/^[A-Za-z0-9._-]{1,64}$/.test(courseId))) {
+    json(response, 400, { error: 'courseId invalid' })
+    return
+  }
+
+  const segments = search({ query, courseId, topK })
   const related = segments.length === 0 ? relatedKnowledgePoints(query) : []
 
   console.log(`[mock-kb] queryLength=${query.trim().length} hits=${segments.length} related=${related.length}`)
