@@ -18,6 +18,8 @@
 ```
 src/                  Host 与 Client 源码
   index.ts            Host 入口（name/inject/Config/apply）
+  host/               配置、日志、云端客户端、工具、Remote 服务
+  shared/             Host/Client 共用类型与上限
   client/             Client 入口与 dsh 类型声明
 scripts/              构建脚本
 spike/                本地 mock 与测试资产（不随包发布）
@@ -75,6 +77,8 @@ cordis.patch.yml      bundle patch（随包发布）
 - **必须**：动态依赖用 `ctx.inject([...], child => …)`，不要在回调外缓存 `child` 的服务引用。
 - **必须**：配置用 schemastery 定义默认值；敏感配置使用 credential-ref：
   `z.string().role("credential-ref").default("ENV_NAME").volatile()`，不得明文保存。
+- **必须**：环境相关配置（`environment` / `baseUrl` / `logLevel`）在激活时校验；非 local 强制 HTTPS，production 拒绝本机地址；默认只指向本地 mock，不得默认连接生产。
+- **应当**：非敏感默认值可由 `TREND_COACH_*` 环境变量覆盖；配置校验失败直接阻止激活，不带着错误地址静默请求。
 - **必须**：设备 grant（access/refresh token、deviceId、expiresAt）存 `credentials` 的 `grant` 记录，键用 `credentialKey('trend-coach', '<用途>')`；刷新用 `modifyRecord()` 的串行读改写，禁止自建 token 文件。
 - **应当**：使用 `.volatile()` 的 Config 不要标注 `Schema<Config>`；volatile 字段输入是 `string`、输出是 `Volatile<string>`，标注会触发 TS2322。
 - **应当**：日志用 `ctx.logger`，实例命名 `ctx.logger("trend-coach")`；错误消息带包名前缀。

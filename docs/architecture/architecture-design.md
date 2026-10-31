@@ -84,20 +84,34 @@ flowchart LR
 当前实现集中在 `src/index.ts`，职责链如下：
 
 ```
-apply(ctx, config)                              // 静态 inject: ['tools', 'credentials']
-├── 读取 Config（baseUrl / apiTokenRef / timeoutMs）
-├── new AuthManager(ctx, config)               // src/auth.ts
+apply(ctx, config)                                  // 静态 inject: ['tools', 'credentials']
+├── resolveConfig(config)                           // src/host/config.ts：校验与规范化
+├── createHostLogger(ctx.logger('trend-coach'), …)  // src/host/log.ts
+├── new AuthManager(ctx, config)                    // src/auth.ts
 │   ├── credential-ref 解析（M2 内部 token 回退）
 │   ├── 设备码：beginDeviceAuth / pollDeviceAuth / signOut
 │   └── request()：Bearer + x-device-id；401 刷新一次；403 → DEVICE_MISMATCH
-├── new TrendCoachService(ctx, config, auth)   // TypertRemoteService('trendCoach')
-│   ├── @Remote search / getSegment / createPlaybackSession → 云端业务接口
+├── new TrendCoachService(ctx, auth, logger)        // src/host/service.ts
+│   ├── @Remote search / getSegment / createPlaybackSession
 │   └── @Remote authStatus / beginDeviceAuth / pollDeviceAuth / signOut
-└── ctx.tools.register(defineTool(trend_coach_search))
+│       └── src/host/cloud-client.ts：云端 HTTP + 响应结构校验
+└── registerSearchTool(ctx, auth)                   // src/host/tool.ts
     ├── parameters: query / courseId? / topK?
     ├── output.schema + render
     └── execute → searchKnowledge(...)
 ```
+
+**配置（`src/host/config.ts`）**
+
+| 字段 | 默认 | 约束 |
+|---|---|---|
+| `environment` | `local`（`TREND_COACH_ENV` 可覆盖） | `local/staging/production`；非 local 强制 HTTPS；production 拒绝本机地址 |
+| `baseUrl` | `TREND_COACH_BASE_URL` 或 `http://127.0.0.1:3939` | 仅 http/https；禁止账号密码、查询串、锚点；末尾斜杠规范化 |
+| `apiTokenRef` | `TREND_COACH_API_TOKEN`（credential-ref） | 仅内部 token 回退 |
+| `timeoutMs` | `10000` | 正数 |
+| `logLevel` | `warn`（`TREND_COACH_LOG_LEVEL` 可覆盖） | `silent/error/warn/info/debug` |
+
+`cordis.patch.yml` 不再写死 `baseUrl`，安装后可用环境变量或 profile 配置切换 staging/production。配置校验失败会阻止插件激活，避免用错误地址静默请求。
 
 **关键点**
 
@@ -107,13 +121,18 @@ apply(ctx, config)                              // 静态 inject: ['tools', 'cre
 - 设备 grant 以 `credentialKey('trend-coach', 'device')` 存入 dsh credentials；`modifyRecord()` 的串行读改写保证 refresh token 轮换不会并发覆盖。
 - `credentials` 与 `tools` 一样是静态 `inject` 依赖：dsh 的激活顺序不保证 `dsh-credentials-local` 先于本插件。`remote.*` 仍禁止静态注入。
 
-**后续拆分触发条件**（满足任一即拆分，避免过早抽象）：
+**模块拆分**：Host 已按职责拆分，`src/index.ts` 只保留入口装配。
 
-- 出现第 3 个云端端点，或检索/鉴权逻辑超过 ~150 行。
-- 引入账号设备码授权、学习进度上报。
-- 需要单测覆盖纯函数（RRF/截断/URL 构造）。
+| 模块 | 职责 |
+|---|---|
+| `src/host/config.ts` | 配置 schema、环境与日志校验、`baseUrl` 规范化 |
+| `src/host/log.ts` | 按 `logLevel` 过滤 Host 日志 |
+| `src/host/cloud-client.ts` | 云端请求、响应结构校验、超时与取消透传 |
+| `src/host/tool.ts` | `trend_coach_search` 定义、渲染与工具错误映射 |
+| `src/host/service.ts` | Typert Remote 服务与统一失败日志 |
+| `src/shared/contracts.ts` | Host/Client 共用领域类型与长度上限 |
 
-建议拆分：`src/host/kb-client.ts`（HTTP + 校验）、`src/host/tool.ts`、`src/host/service.ts`、`src/shared/contracts.ts`（类型与 zod schema）。
+Client 仍为单文件；出现第 3 个页面型 tab 时再拆为 `panel.tsx` / `player.tsx` / `citations.ts`。
 
 ### 4.2 Browser 半
 
@@ -493,21 +512,29 @@ Content-Type: application/json
 
 ```
 src/
-├── index.ts                 # Host：Config、工具、Remote 服务、云端访问
+├── index.ts                 # Host 入口：name/inject/Config/apply 装配
 ├── auth.ts                  # Host：设备码授权、grant 存储、令牌刷新
 ├── errors.ts                # Host：入参/响应边界校验、错误映射、限长 JSON 读取
 ├── untrusted.ts             # Host：不可信文本边界包裹、控制字符剥离、边界伪造转义
+├── host/
+│   ├── config.ts            # 配置 schema、环境/日志校验、baseUrl 规范化
+│   ├── log.ts               # 按 logLevel 过滤日志
+│   ├── cloud-client.ts      # 云端请求与响应结构校验
+│   ├── tool.ts              # trend_coach_search 工具与渲染
+│   └── service.ts           # TrendCoach Remote 服务
+├── shared/
+│   └── contracts.ts         # Host/Client 共用领域类型与上限
 └── client/
     ├── index.ts             # Client：Remote spec、面板、播放器、引用拦截
     └── dsh.d.ts             # dsh 客户端服务的最小类型声明
 scripts/build-client.mjs     # esbuild → lib/client.js（__ModuleLoader__ 包装）
-cordis.patch.yml             # bundle patch：插入插件配置
+cordis.patch.yml             # bundle patch：插入插件（config 走 schema 默认值）
 spike/                       # mock KB、fixtures、测试视频
-test/                        # Host 边界、不可信文本、mock 契约、发布包断言
+test/                        # Host 边界、配置、不可信文本、mock 契约、发布包断言
 docs/                        # 需求、架构、规范
 ```
 
-**演进规则**：M2 只做必要拆分；当 Host 超过 ~400 行或新增第 3 个端点时，按 §4.1 建议拆分。Client 组件超过 2 个页面型 tab 时拆为 `panel.tsx` / `player.tsx` / `citations.ts`。共享类型放入 `src/shared/`，但不得把 Node 专属代码引入 Client bundle。
+**演进规则**：`index.ts` 保持薄入口；云端客户端、工具与 Remote 服务分别演进。Client 组件超过 2 个页面型 tab 时拆为 `panel.tsx` / `player.tsx` / `citations.ts`。共享类型放入 `src/shared/`，但不得把 Node 专属代码引入 Client bundle。
 
 ---
 
@@ -517,7 +544,7 @@ docs/                        # 需求、架构、规范
 
 1. `npm run typecheck`
 2. `npm run build`
-3. `npm test`（Host 边界、不可信文本、mock 云端契约、打包清单）
+3. `npm test`（Host 边界、配置校验、不可信文本、mock 云端契约、打包清单）
 4. 本地 mock：`npm run mock` + dsh 新 profile 安装 tarball
 5. 浏览器冒烟：面板检索、Remote 挂载、引用点击、seek 定位
 6. `npm pack` 后在全新 profile 安装，确认 bundle 注册与双半加载

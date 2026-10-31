@@ -27,22 +27,34 @@
 ```bash
 npm run typecheck                     # tsc strict
 npm run build                         # Host tsc + Client esbuild → lib/
-npm test                              # 构建后跑 Host 边界/契约/打包断言
+npm test                              # 构建后跑 Host 边界/配置/契约/打包断言
 npm run mock                          # mock KB + video @ 127.0.0.1:3939
 npm pack                              # 生成安装包（*.tgz 已 gitignore）
 npx --yes @deepseek-ai/dsh@0.2.1-rc.5 --profile <name> --port <port> --no-open
 ```
 
+## 配置
+
+- `environment`（`local/staging/production`）、`baseUrl`、`timeoutMs`、`logLevel`（`silent/error/warn/info/debug`）、`apiTokenRef` 在 `src/host/config.ts` 定义与校验。
+- 环境变量 `TREND_COACH_ENV`、`TREND_COACH_BASE_URL`、`TREND_COACH_LOG_LEVEL` 可覆盖默认值；`cordis.patch.yml` 不再写死地址。
+- 非 local 强制 HTTPS，production 拒绝本机地址；校验失败会阻止插件激活。
+
 ## 代码地图
 
-- `src/index.ts`：Host 半（Config、`trend_coach_search` 工具、Remote 服务、云端请求）
+- `src/index.ts`：Host 入口（`name` / `inject` / `Config` / `apply` 装配）
+- `src/host/config.ts`：配置 schema、环境/日志校验与 `baseUrl` 规范化
+- `src/host/log.ts`：按 `logLevel` 过滤 Host 日志
+- `src/host/cloud-client.ts`：云端请求与响应结构校验
+- `src/host/tool.ts`：`trend_coach_search` 工具与渲染
+- `src/host/service.ts`：TrendCoach Remote 服务
+- `src/shared/contracts.ts`：Host/Client 共用领域类型与长度上限
 - `src/auth.ts`：Host 授权（credential-ref、设备码登录/轮询、grant 存储、401 刷新、设备绑定）
 - `src/errors.ts`：Host 边界（入参/响应校验、错误映射、限长 JSON 读取）
 - `src/untrusted.ts`：Host 不可信文本处理（固定边界包裹、控制字符剥离、边界伪造转义）
 - `src/client/index.ts`：Browser 半（Remote spec、右栏面板含设备登录、播放器、引用拦截）
 - `scripts/build-client.mjs`：Client bundle 构建与 `__ModuleLoader__` 包装
-- `test/`：Host 边界、不可信文本、mock 云端契约与发布包断言（`npm test`）
-- `cordis.patch.yml`：bundle patch，注入插件配置
+- `test/`：Host 边界、配置、不可信文本、mock 云端契约与发布包断言（`npm test`）
+- `cordis.patch.yml`：bundle patch（config 走 schema 默认值/环境变量）
 - `spike/`：mock KB、fixtures、测试视频（不随包发布）
 
 ## 改动规则
