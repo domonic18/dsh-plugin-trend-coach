@@ -8,6 +8,7 @@ function config(overrides = {}) {
     baseUrl: LOCAL_BASE_URL,
     apiTokenRef: { get: () => 'test-token' },
     timeoutMs: 10_000,
+    voiceTimeoutMs: 40_000,
     logLevel: 'warn',
     ...overrides,
   }
@@ -47,6 +48,8 @@ test('非法 environment/logLevel/timeoutMs 直接拒绝', () => {
   assert.throws(() => resolveConfig(config({ logLevel: 'trace' })), /logLevel/)
   assert.throws(() => resolveConfig(config({ timeoutMs: 0 })), /timeoutMs/)
   assert.throws(() => resolveConfig(config({ timeoutMs: Number.NaN })), /timeoutMs/)
+  assert.throws(() => resolveConfig(config({ voiceTimeoutMs: 0 })), /voiceTimeoutMs/)
+  assert.throws(() => resolveConfig(config({ voiceTimeoutMs: Number.NaN })), /voiceTimeoutMs/)
 })
 
 test('baseUrl 拒绝非法协议、账号密码与查询串', () => {

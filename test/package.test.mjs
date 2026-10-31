@@ -36,7 +36,13 @@ test('发布包只含运行时产物', () => {
     'lib/client/context-bridge.js',
     'lib/client/learner-context.js',
     'lib/client/selection.js',
+    'lib/client/composer-focus.js',
+    'lib/client/voice/audio.js',
+    'lib/client/voice/recorder.js',
+    'lib/client/voice/controller.js',
+    'lib/client/voice/voice-button.js',
     'lib/host/learner-context.js',
+    'lib/host/voice-audio.js',
     'README.md',
     'LICENSE',
   ]) {

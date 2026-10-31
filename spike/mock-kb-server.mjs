@@ -83,6 +83,12 @@ const articleMarkdown = {
 const ARTICLE_PUBLISHED_AT = Date.parse('2026-10-01T00:00:00.000Z')
 const progress = new Map()
 
+const MAX_ASR_BODY_BYTES = 3 * 1024 * 1024
+const ASR_SAMPLE_RATE = 16000
+const ASR_WAV_HEADER_BYTES = 44
+const ASR_MAX_WAV_BYTES = ASR_WAV_HEADER_BYTES + ASR_SAMPLE_RATE * 2 * 60
+const ASR_TRANSCRIPT = '趋势反转的初步信号有哪些？'
+
 const port = Number(process.env.MOCK_KB_PORT ?? 3939)
 const origin = `http://127.0.0.1:${port}`
 const hlsDir = fileURLToPath(new URL('./media/hls/', import.meta.url))
@@ -356,6 +362,57 @@ async function readJson(request) {
   } catch {
     return undefined
   }
+}
+
+async function readBodyLimited(request, limit) {
+  const chunks = []
+  let size = 0
+  for await (const chunk of request) {
+    size += chunk.length
+    if (size > limit) return { tooLarge: true }
+    chunks.push(chunk)
+  }
+  return { body: Buffer.concat(chunks) }
+}
+
+/** 与插件 Host 同口径的 WAV 边界；mock 用于暴露契约漂移。 */
+function validateAsrAudio(audio, durationMs) {
+  if (typeof audio !== 'string' || audio.length === 0 || audio.length % 4 !== 0) return 'audio invalid'
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(audio)) return 'audio invalid'
+  const bytes = Buffer.from(audio, 'base64')
+  if (bytes.length < ASR_WAV_HEADER_BYTES || bytes.length > ASR_MAX_WAV_BYTES) return 'audio size invalid'
+  if (bytes.toString('ascii', 0, 4) !== 'RIFF' || bytes.toString('ascii', 8, 12) !== 'WAVE') {
+    return 'audio is not wav'
+  }
+  let offset = 12
+  let format
+  let dataBytes
+  while (offset + 8 <= bytes.length) {
+    const id = bytes.toString('ascii', offset, offset + 4)
+    const size = bytes.readUInt32LE(offset + 4)
+    const body = offset + 8
+    if (body + size > bytes.length) return 'audio chunk out of bounds'
+    if (id === 'fmt ') {
+      if (size < 16) return 'audio fmt invalid'
+      format = {
+        audioFormat: bytes.readUInt16LE(body),
+        channels: bytes.readUInt16LE(body + 2),
+        sampleRate: bytes.readUInt32LE(body + 4),
+        bitsPerSample: bytes.readUInt16LE(body + 14),
+      }
+    } else if (id === 'data') {
+      dataBytes = size
+    }
+    offset = body + size + (size % 2)
+  }
+  if (format === undefined || dataBytes === undefined) return 'audio chunks missing'
+  if (format.audioFormat !== 1 || format.channels !== 1
+    || format.sampleRate !== ASR_SAMPLE_RATE || format.bitsPerSample !== 16) {
+    return 'audio format invalid'
+  }
+  const actualMs = (dataBytes / (ASR_SAMPLE_RATE * 2)) * 1000
+  if (actualMs > 60_000 || Math.abs(actualMs - durationMs) > 1000) return 'audio duration mismatch'
+  return undefined
 }
 
 function escapeHtml(value) {
@@ -731,6 +788,43 @@ const server = createServer(async (request, response) => {
     progress.set(key, next)
     console.log(`[mock-kb] progress ${knowledgePointId} watched=${next.watchedSec} completed=${next.completed}`)
     json(response, 200, { knowledgePointId, ...next })
+    return
+  }
+
+  if (request.method === 'POST' && url.pathname === '/v1/asr/transcribe') {
+    const auth = requireAuth(request, response)
+    if (auth === undefined) return
+    const read = await readBodyLimited(request, MAX_ASR_BODY_BYTES)
+    if (read.tooLarge === true) {
+      json(response, 413, { error: 'payload too large' })
+      return
+    }
+    let payload
+    try {
+      payload = JSON.parse(read.body.toString('utf8'))
+    } catch {
+      json(response, 400, { error: 'invalid json' })
+      return
+    }
+    if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
+      json(response, 400, { error: 'body must be an object' })
+      return
+    }
+    if (payload.format !== 'wav') {
+      json(response, 400, { error: 'format must be wav' })
+      return
+    }
+    if (!isInt(payload.durationMs, 1, 60_000)) {
+      json(response, 400, { error: 'durationMs must be an integer 1-60000' })
+      return
+    }
+    const invalid = validateAsrAudio(payload.audio, payload.durationMs)
+    if (invalid !== undefined) {
+      json(response, 400, { error: invalid })
+      return
+    }
+    console.log(`[mock-kb] asr device=${mask(auth.deviceId)} durationMs=${payload.durationMs}`)
+    json(response, 200, { text: ASR_TRANSCRIPT, durationMs: payload.durationMs })
     return
   }
 

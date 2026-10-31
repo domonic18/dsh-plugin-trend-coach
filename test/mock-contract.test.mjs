@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { createServer } from 'node:net'
 import test from 'node:test'
+import { wavBase64 } from './voice-fixtures.mjs'
 
 const DEVICE_ID = 'contract-device-001'
 const OTHER_DEVICE_ID = 'contract-device-002'
@@ -443,6 +444,58 @@ test('mock 云端接口满足对接清单', async (t) => {
       token: grant.accessToken,
     })
     assert.equal(deniedAfterRevoke.status, 403)
+  })
+
+  await t.test('语音转写要求鉴权、WAV 与时长一致', async () => {
+    const audio = wavBase64({ durationMs: 12000 })
+    const body = { audio, format: 'wav', durationMs: 12000 }
+
+    const ok = await api('/v1/asr/transcribe', {
+      method: 'POST',
+      body,
+      token: grant.accessToken,
+    })
+    assert.equal(ok.status, 200)
+    assert.equal(typeof ok.json.text, 'string')
+    assert.equal(ok.json.durationMs, 12000)
+
+    const unauthorized = await api('/v1/asr/transcribe', { method: 'POST', body })
+    assert.equal(unauthorized.status, 401)
+
+    const mismatched = await api('/v1/asr/transcribe', {
+      method: 'POST',
+      body,
+      token: grant.accessToken,
+      deviceId: OTHER_DEVICE_ID,
+    })
+    assert.equal(mismatched.status, 403)
+
+    const invalidBodies = [
+      { ...body, format: 'webm' },
+      { ...body, durationMs: 0 },
+      { ...body, durationMs: 60_001 },
+      { ...body, audio: 'not base64' },
+      { audio: wavBase64({ durationMs: 1000 }), format: 'wav', durationMs: 12_000 },
+      { audio: wavBase64({ channels: 2 }), format: 'wav', durationMs: 1000 },
+      { audio: wavBase64({ sampleRate: 44_100 }), format: 'wav', durationMs: 1000 },
+      { audio: wavBase64({ bits: 8 }), format: 'wav', durationMs: 1000 },
+      { audio: wavBase64({ durationMs: 61_000 }), format: 'wav', durationMs: 60_000 },
+    ]
+    for (const invalidBody of invalidBodies) {
+      const invalid = await api('/v1/asr/transcribe', {
+        method: 'POST',
+        body: invalidBody,
+        token: grant.accessToken,
+      })
+      assert.equal(invalid.status, 400, JSON.stringify({ ...invalidBody, audio: '<audio>' }))
+    }
+
+    const tooLarge = await api('/v1/asr/transcribe', {
+      method: 'POST',
+      body: 'x'.repeat(3 * 1024 * 1024 + 10),
+      token: grant.accessToken,
+    })
+    assert.equal(tooLarge.status, 413)
   })
 
   await t.test('刷新轮换并使旧 refresh 失效', async () => {

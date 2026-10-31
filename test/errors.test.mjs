@@ -25,6 +25,7 @@ import {
   requireRevision,
   requireSegmentId,
   requireSessionId,
+  requireVoiceDurationMs,
   toRemoteError,
   userMessage,
 } from '../lib/errors.js'
@@ -172,4 +173,12 @@ test('readJsonResponse 拒绝超大响应、非法 JSON 与空响应体', async 
   await assert.rejects(readJsonResponse(new Response(null, { status: 204 })), InvalidResponseError)
 
   assert.deepEqual(await readJsonResponse(new Response(JSON.stringify({ ok: true }))), { ok: true })
+})
+
+test('requireVoiceDurationMs 只接受 1–60s 整数毫秒', () => {
+  assert.equal(requireVoiceDurationMs(1), 1)
+  assert.equal(requireVoiceDurationMs(60_000), 60_000)
+  for (const value of [0, -1, 60_001, 1.5, Number.NaN, '1000', undefined]) {
+    assert.throws(() => requireVoiceDurationMs(value), InputError, String(value))
+  }
 })
