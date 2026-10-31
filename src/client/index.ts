@@ -5,10 +5,16 @@ import { z } from 'zod'
 import { createTypertRemoteInfo } from '@deepseek-ai/dsh-typert-protocol/remote-info'
 import type { TypertRemoteSpec } from '@deepseek-ai/dsh-typert-protocol/types'
 import type {
+  AuthStatus,
+  DeviceAuthStart,
   PlaybackSession,
+  RemoteAuthStatusResult,
+  RemoteDeviceAuthPollResult,
+  RemoteDeviceAuthStartResult,
   RemotePlaybackResult,
   RemoteSearchResult,
   RemoteSegmentResult,
+  RemoteSignOutResult,
   SearchPayload,
   SearchSegment,
 } from './dsh.js'
@@ -47,6 +53,25 @@ const resultSchema = z.object({
   query: z.string(),
   segments: z.array(segmentSchema),
 })
+
+const authStatusSchema = z.object({
+  mode: z.enum(['device', 'credential', 'none']),
+  authorized: z.boolean(),
+  deviceId: z.string().optional(),
+})
+
+const deviceAuthStartSchema = z.object({
+  userCode: z.string(),
+  verificationUri: z.string(),
+  expiresAt: z.number(),
+  interval: z.number(),
+})
+
+const deviceAuthPollSchema = z.object({
+  status: z.enum(['pending', 'authorized', 'expired']),
+})
+
+const signOutSchema = z.object({ signedOut: z.literal(true) })
 
 const codec = (typeSymbol: string, create: () => z.ZodType) => ({
   mode: 'strict' as const,
@@ -112,12 +137,48 @@ const spec: TypertRemoteSpec = {
         () => playbackSessionSchema,
       ),
     },
+    'trendCoach/authStatus': {
+      service: 'trendCoach',
+      invocation: { kind: 'direct' },
+      parameters: [],
+      result: codec('dsh-plugin-trend-coach#trendCoach/authStatus:result', () => authStatusSchema),
+    },
+    'trendCoach/beginDeviceAuth': {
+      service: 'trendCoach',
+      invocation: { kind: 'direct' },
+      parameters: [],
+      cancellation: { parameter: 'signal' },
+      result: codec(
+        'dsh-plugin-trend-coach#trendCoach/beginDeviceAuth:result',
+        () => deviceAuthStartSchema,
+      ),
+    },
+    'trendCoach/pollDeviceAuth': {
+      service: 'trendCoach',
+      invocation: { kind: 'direct' },
+      parameters: [],
+      cancellation: { parameter: 'signal' },
+      result: codec(
+        'dsh-plugin-trend-coach#trendCoach/pollDeviceAuth:result',
+        () => deviceAuthPollSchema,
+      ),
+    },
+    'trendCoach/signOut': {
+      service: 'trendCoach',
+      invocation: { kind: 'direct' },
+      parameters: [],
+      result: codec('dsh-plugin-trend-coach#trendCoach/signOut:result', () => signOutSchema),
+    },
   },
 }
 
 interface TrendCoachRemote {
   getSegment(segmentId: string): Promise<RemoteSegmentResult>
   createPlaybackSession(segmentId: string): Promise<RemotePlaybackResult>
+  authStatus(): Promise<RemoteAuthStatusResult>
+  beginDeviceAuth(): Promise<RemoteDeviceAuthStartResult>
+  pollDeviceAuth(): Promise<RemoteDeviceAuthPollResult>
+  signOut(): Promise<RemoteSignOutResult>
 }
 
 interface PlayerParams {
@@ -145,6 +206,10 @@ interface TabInfoHook {
 interface PanelProps {
   search: (query: string) => Promise<RemoteSearchResult>
   openSegment: (params: PlayerParams) => Promise<void>
+  authStatus: () => Promise<RemoteAuthStatusResult>
+  beginDeviceAuth: () => Promise<RemoteDeviceAuthStartResult>
+  pollDeviceAuth: () => Promise<RemoteDeviceAuthPollResult>
+  signOut: () => Promise<RemoteSignOutResult>
 }
 
 interface PlayerProps {
@@ -155,11 +220,103 @@ function formatSegment(segment: SearchSegment): string {
   return `[${segment.segmentId}] ${segment.title} · ${segment.startSec}s-${segment.endSec}s · 相关度 ${segment.score.toFixed(3)}`
 }
 
-function Panel({ search, openSegment }: PanelProps): React.ReactElement {
+function Panel({
+  search,
+  openSegment,
+  authStatus,
+  beginDeviceAuth,
+  pollDeviceAuth,
+  signOut,
+}: PanelProps): React.ReactElement {
   const [query, setQuery] = React.useState('趋势反转怎么判断')
   const [busy, setBusy] = React.useState(false)
   const [payload, setPayload] = React.useState<SearchPayload | undefined>(undefined)
   const [error, setError] = React.useState<string | undefined>(undefined)
+
+  const [auth, setAuth] = React.useState<AuthStatus | undefined>(undefined)
+  const [device, setDevice] = React.useState<DeviceAuthStart | undefined>(undefined)
+  const [authBusy, setAuthBusy] = React.useState(false)
+  const [authError, setAuthError] = React.useState<string | undefined>(undefined)
+
+  const refreshAuth = React.useCallback(async () => {
+    try {
+      const result = await authStatus()
+      if (result.ok) {
+        setAuth(result.value)
+      } else {
+        setAuthError(`${result.error.code}: ${result.error.message}`)
+      }
+    } catch (authFailure: unknown) {
+      setAuthError(authFailure instanceof Error ? authFailure.message : '授权状态读取失败')
+    }
+  }, [authStatus])
+
+  React.useEffect(() => {
+    void refreshAuth()
+  }, [refreshAuth])
+
+  React.useEffect(() => {
+    if (device === undefined) return
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const tick = async () => {
+      try {
+        const result = await pollDeviceAuth()
+        if (cancelled) return
+        if (!result.ok) {
+          setAuthError(`${result.error.code}: ${result.error.message}`)
+          setDevice(undefined)
+          return
+        }
+        if (result.value.status === 'authorized') {
+          setDevice(undefined)
+          await refreshAuth()
+          return
+        }
+        if (result.value.status === 'expired') {
+          setDevice(undefined)
+          setAuthError('设备码已过期，请重新发起登录')
+          return
+        }
+        timer = setTimeout(() => void tick(), device.interval * 1000)
+      } catch (pollFailure: unknown) {
+        if (cancelled) return
+        setAuthError(pollFailure instanceof Error ? pollFailure.message : '设备授权轮询失败')
+        setDevice(undefined)
+      }
+    }
+    timer = setTimeout(() => void tick(), device.interval * 1000)
+    return () => {
+      cancelled = true
+      if (timer !== undefined) clearTimeout(timer)
+    }
+  }, [device, pollDeviceAuth, refreshAuth])
+
+  const login = async () => {
+    setAuthBusy(true)
+    setAuthError(undefined)
+    try {
+      const result = await beginDeviceAuth()
+      if (result.ok) setDevice(result.value)
+      else setAuthError(`${result.error.code}: ${result.error.message}`)
+    } catch (loginFailure: unknown) {
+      setAuthError(loginFailure instanceof Error ? loginFailure.message : '设备授权发起失败')
+    }
+    setAuthBusy(false)
+  }
+
+  const logout = async () => {
+    setAuthBusy(true)
+    setAuthError(undefined)
+    try {
+      const result = await signOut()
+      if (!result.ok) setAuthError(`${result.error.code}: ${result.error.message}`)
+      await refreshAuth()
+    } catch (logoutFailure: unknown) {
+      setAuthError(logoutFailure instanceof Error ? logoutFailure.message : '退出登录失败')
+    }
+    setAuthBusy(false)
+  }
 
   const run = async () => {
     setBusy(true)
@@ -211,10 +368,60 @@ function Panel({ search, openSegment }: PanelProps): React.ReactElement {
     )
   }
 
+  const authLine = auth === undefined
+    ? '授权状态读取中…'
+    : auth.authorized
+      ? auth.mode === 'device'
+        ? `已授权（设备 ${auth.deviceId ?? '未知'}）`
+        : '已授权（本地凭据）'
+      : '未授权，请先完成设备登录'
+
+  const authBlock = React.createElement(
+    'div',
+    { style: { border: '1px solid #ddd', borderRadius: 4, padding: '6px 8px', marginBottom: 8 } },
+    React.createElement('div', null, authLine),
+    device === undefined
+      ? null
+      : React.createElement('div', { style: { marginTop: 6 } },
+        React.createElement('div', null, '在浏览器打开下方地址，输入设备码完成授权：'),
+        React.createElement('a', {
+          href: device.verificationUri,
+          target: '_blank',
+          rel: 'noreferrer',
+          style: { wordBreak: 'break-all' },
+        }, device.verificationUri),
+        React.createElement('div', null,
+          '设备码：',
+          React.createElement('code', { style: { fontSize: 15, fontWeight: 600, letterSpacing: 2 } }, device.userCode),
+        ),
+        React.createElement('div', { style: { color: '#666' } }, '等待授权中…'),
+      ),
+    React.createElement('div', { style: { display: 'flex', gap: 6, marginTop: 6 } },
+      device === undefined
+        ? React.createElement('button', {
+          type: 'button',
+          disabled: authBusy,
+          onClick: () => void login(),
+        }, authBusy ? '处理中…' : auth?.authorized === true ? '重新设备登录' : '设备登录')
+        : null,
+      auth?.authorized === true && device === undefined
+        ? React.createElement('button', {
+          type: 'button',
+          disabled: authBusy,
+          onClick: () => void logout(),
+        }, '退出登录')
+        : null,
+    ),
+    authError !== undefined
+      ? React.createElement('p', { style: { margin: '6px 0 0', color: '#c0392b' } }, authError)
+      : null,
+  )
+
   return React.createElement(
     'div',
     { style: { padding: 12, fontSize: 13, lineHeight: 1.5 } },
     React.createElement('h3', { style: { margin: '0 0 8px' } }, '趋势伴学'),
+    authBlock,
     React.createElement('div', { style: { display: 'flex', gap: 6 } },
       React.createElement('input', {
         value: query,
@@ -446,6 +653,10 @@ export function apply(ctx: Context): void {
           inject: () => ({
             search: (query: string) => scoped.remote.trendCoach.search(query, 5),
             openSegment: (params: PlayerParams) => openSegment(scoped.remote.trendCoach, params),
+            authStatus: () => scoped.remote.trendCoach.authStatus(),
+            beginDeviceAuth: () => scoped.remote.trendCoach.beginDeviceAuth(),
+            pollDeviceAuth: () => scoped.remote.trendCoach.pollDeviceAuth(),
+            signOut: () => scoped.remote.trendCoach.signOut(),
           }),
         }, Panel))
 

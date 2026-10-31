@@ -1,21 +1,27 @@
-import type { Context } from '@deepseek-ai/cordis'
+import type { Context, Volatile } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
+import {
+  AuthManager,
+  type AuthStatus,
+  type DeviceAuthPoll,
+  type DeviceAuthStart,
+} from './auth.js'
 
 export const name = 'trend-coach'
 
-export const inject = ['tools']
+export const inject = ['tools', 'credentials']
 
 export interface Config {
   baseUrl: string
-  apiToken?: string
+  apiTokenRef: Volatile<string>
   timeoutMs: number
 }
 
-export const Config: Schema<Config> = Schema.object({
+export const Config = Schema.object({
   baseUrl: Schema.string().default('http://127.0.0.1:3939'),
-  apiToken: Schema.string(),
+  apiTokenRef: Schema.string().role('credential-ref').default('TREND_COACH_API_TOKEN').volatile(),
   timeoutMs: Schema.number().default(10000),
 })
 
@@ -111,6 +117,7 @@ function isSegment(value: unknown): value is Segment {
 }
 
 async function searchKnowledge(
+  auth: AuthManager,
   config: Config,
   query: string,
   topK: number,
@@ -120,16 +127,11 @@ async function searchKnowledge(
   const body: Record<string, unknown> = { query, topK }
   if (courseId !== undefined) body.courseId = courseId
 
-  const headers: Record<string, string> = { 'content-type': 'application/json' }
-  if (config.apiToken) headers.authorization = `Bearer ${config.apiToken}`
-
-  const combined = AbortSignal.any([signal, AbortSignal.timeout(config.timeoutMs)])
-  const response = await fetch(`${config.baseUrl}/v1/kb/search`, {
+  const response = await auth.request('/v1/kb/search', {
     method: 'POST',
-    headers,
+    headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
-    signal: combined,
-  })
+  }, signal)
 
   if (!response.ok) {
     throw new Error(`知识库检索失败: HTTP ${response.status} ${response.statusText}`)
@@ -154,18 +156,16 @@ async function searchKnowledge(
 }
 
 async function getSegment(
+  auth: AuthManager,
   config: Config,
   segmentId: string,
   signal: AbortSignal,
 ): Promise<Segment> {
-  const headers: Record<string, string> = {}
-  if (config.apiToken) headers.authorization = `Bearer ${config.apiToken}`
-
-  const combined = AbortSignal.any([signal, AbortSignal.timeout(config.timeoutMs)])
-  const response = await fetch(`${config.baseUrl}/v1/kb/segments/${encodeURIComponent(segmentId)}`, {
-    headers,
-    signal: combined,
-  })
+  const response = await auth.request(
+    `/v1/kb/segments/${encodeURIComponent(segmentId)}`,
+    {},
+    signal,
+  )
 
   if (!response.ok) {
     throw new Error(`片段查询失败: HTTP ${response.status} ${response.statusText}`)
@@ -192,20 +192,16 @@ function isPlaybackSession(value: unknown): value is PlaybackSession {
 }
 
 async function createPlaybackSession(
+  auth: AuthManager,
   config: Config,
   segmentId: string,
   signal: AbortSignal,
 ): Promise<PlaybackSession> {
-  const headers: Record<string, string> = { 'content-type': 'application/json' }
-  if (config.apiToken) headers.authorization = `Bearer ${config.apiToken}`
-
-  const combined = AbortSignal.any([signal, AbortSignal.timeout(config.timeoutMs)])
-  const response = await fetch(`${config.baseUrl}/v1/playback/sessions`, {
+  const response = await auth.request('/v1/playback/sessions', {
     method: 'POST',
-    headers,
+    headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ segmentId }),
-    signal: combined,
-  })
+  }, signal)
 
   if (!response.ok) {
     throw new Error(`播放会话创建失败: HTTP ${response.status} ${response.statusText}`)
@@ -220,30 +216,54 @@ async function createPlaybackSession(
 
 class TrendCoachService extends TypertRemoteService {
   private readonly config: Config
+  private readonly auth: AuthManager
 
-  constructor(ctx: Context, config: Config) {
+  constructor(ctx: Context, config: Config, auth: AuthManager) {
     super(ctx, 'trendCoach')
     this.config = config
+    this.auth = auth
   }
 
   @Remote
   async search(query: string, topK: number, signal: AbortSignal): Promise<SearchResult> {
-    return await searchKnowledge(this.config, query, topK, undefined, signal)
+    return await searchKnowledge(this.auth, this.config, query, topK, undefined, signal)
   }
 
   @Remote
   async getSegment(segmentId: string, signal: AbortSignal): Promise<Segment> {
-    return await getSegment(this.config, segmentId, signal)
+    return await getSegment(this.auth, this.config, segmentId, signal)
   }
 
   @Remote
   async createPlaybackSession(segmentId: string, signal: AbortSignal): Promise<PlaybackSession> {
-    return await createPlaybackSession(this.config, segmentId, signal)
+    return await createPlaybackSession(this.auth, this.config, segmentId, signal)
+  }
+
+  @Remote
+  async authStatus(): Promise<AuthStatus> {
+    return await this.auth.status()
+  }
+
+  @Remote
+  async beginDeviceAuth(signal: AbortSignal): Promise<DeviceAuthStart> {
+    return await this.auth.beginDeviceAuth(signal)
+  }
+
+  @Remote
+  async pollDeviceAuth(signal: AbortSignal): Promise<DeviceAuthPoll> {
+    return await this.auth.pollDeviceAuth(signal)
+  }
+
+  @Remote
+  async signOut(): Promise<{ signedOut: true }> {
+    await this.auth.signOut()
+    return { signedOut: true }
   }
 }
 
 export function apply(ctx: Context, config: Config): void {
-  new TrendCoachService(ctx, config)
+  const auth = new AuthManager(ctx, config)
+  new TrendCoachService(ctx, config, auth)
 
   ctx.tools.register(
     defineTool({
@@ -267,7 +287,7 @@ export function apply(ctx: Context, config: Config): void {
           courseId?: string
           topK?: number
         }
-        return await searchKnowledge(config, query, topK ?? 5, courseId, exec.signal)
+        return await searchKnowledge(auth, config, query, topK ?? 5, courseId, exec.signal)
       },
     }),
   )

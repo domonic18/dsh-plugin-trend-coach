@@ -36,6 +36,39 @@ export type RemotePlaybackResult =
   | { ok: true; value: PlaybackSession }
   | { ok: false; error: { code: string; message: string } }
 
+export interface AuthStatus {
+  mode: 'device' | 'credential' | 'none'
+  authorized: boolean
+  deviceId?: string
+}
+
+export interface DeviceAuthStart {
+  userCode: string
+  verificationUri: string
+  expiresAt: number
+  interval: number
+}
+
+export interface DeviceAuthPoll {
+  status: 'pending' | 'authorized' | 'expired'
+}
+
+export type RemoteAuthStatusResult =
+  | { ok: true; value: AuthStatus }
+  | { ok: false; error: { code: string; message: string } }
+
+export type RemoteDeviceAuthStartResult =
+  | { ok: true; value: DeviceAuthStart }
+  | { ok: false; error: { code: string; message: string } }
+
+export type RemoteDeviceAuthPollResult =
+  | { ok: true; value: DeviceAuthPoll }
+  | { ok: false; error: { code: string; message: string } }
+
+export type RemoteSignOutResult =
+  | { ok: true; value: { signedOut: true } }
+  | { ok: false; error: { code: string; message: string } }
+
 interface SlotsService {
   inject(key: string, callback: () => void | (() => void)): void
   register(options: Record<string, unknown>, component: unknown): () => void
@@ -66,6 +99,10 @@ interface ClientRemoteService {
     search(query: string, topK: number): Promise<RemoteSearchResult>
     getSegment(segmentId: string): Promise<RemoteSegmentResult>
     createPlaybackSession(segmentId: string): Promise<RemotePlaybackResult>
+    authStatus(): Promise<RemoteAuthStatusResult>
+    beginDeviceAuth(): Promise<RemoteDeviceAuthStartResult>
+    pollDeviceAuth(): Promise<RemoteDeviceAuthPollResult>
+    signOut(): Promise<RemoteSignOutResult>
   }
 }
 
