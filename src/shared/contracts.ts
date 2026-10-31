@@ -48,6 +48,10 @@ export interface DeviceAuthPoll {
   status: 'pending' | 'authorized' | 'expired'
 }
 
+export interface EventsConsent {
+  consent: boolean
+}
+
 export const MAX_SEGMENT_TEXT = 4000
 export const MAX_RELATED_POINTS = 5
 export const MAX_TITLE_LENGTH = 200

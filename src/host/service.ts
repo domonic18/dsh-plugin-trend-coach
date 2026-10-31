@@ -1,11 +1,12 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import type { AuthManager } from '../auth.js'
-import { toRemoteError } from '../errors.js'
+import { normalizeTopK, toRemoteError } from '../errors.js'
 import type {
   AuthStatus,
   DeviceAuthPoll,
   DeviceAuthStart,
+  EventsConsent,
   PlaybackSession,
   SearchResult,
   Segment,
@@ -15,16 +16,19 @@ import {
   getSegment,
   searchKnowledge,
 } from './cloud-client.js'
+import type { EventReporter } from './events.js'
 import type { HostLogger } from './log.js'
 
 export class TrendCoachService extends TypertRemoteService {
   private readonly auth: AuthManager
   private readonly logger: HostLogger
+  private readonly events: EventReporter
 
-  constructor(ctx: Context, auth: AuthManager, logger: HostLogger) {
+  constructor(ctx: Context, auth: AuthManager, logger: HostLogger, events: EventReporter) {
     super(ctx, 'trendCoach')
     this.auth = auth
     this.logger = logger
+    this.events = events
   }
 
   /** 失败只记录操作名与错误类型，不记录 token、设备 ID 或 query 原文。 */
@@ -39,8 +43,11 @@ export class TrendCoachService extends TypertRemoteService {
 
   @Remote
   async search(query: string, topK: number, signal: AbortSignal): Promise<SearchResult> {
-    return await this.invoke('知识库检索', () =>
+    const startedAt = Date.now()
+    const result = await this.invoke('知识库检索', () =>
       searchKnowledge(this.auth, query, topK, undefined, signal))
+    this.events.reportSearch(Date.now() - startedAt, normalizeTopK(topK), result.segments.length)
+    return result
   }
 
   @Remote
@@ -70,8 +77,31 @@ export class TrendCoachService extends TypertRemoteService {
   }
 
   @Remote
+  async eventConsent(): Promise<EventsConsent> {
+    return await this.invoke('事件同意读取', () => this.events.getConsent())
+  }
+
+  @Remote
+  async setEventConsent(consent: boolean): Promise<EventsConsent> {
+    return await this.invoke('事件同意更新', () => this.events.setConsent(consent))
+  }
+
+  @Remote
+  async reportCitationClick(segmentId: string): Promise<{ reported: true }> {
+    this.events.reportCitationClick(segmentId)
+    return { reported: true }
+  }
+
+  @Remote
+  async reportPlayerStarted(startupMs: number, autoplayBlocked: boolean): Promise<{ reported: true }> {
+    this.events.reportPlayerStarted(startupMs, autoplayBlocked)
+    return { reported: true }
+  }
+
+  @Remote
   async signOut(): Promise<{ signedOut: true }> {
     await this.invoke('退出登录', () => this.auth.signOut())
+    this.events.resetConsent()
     return { signedOut: true }
   }
 }
