@@ -16,8 +16,10 @@
 2. `sidebarRightTabs.register()` 的 `guide` 必须是数组；tab body 注册在 keyed slot `sidebar.right.pane.tab`，key = tab 定义 `id`。
 3. 引用只走两条路：`seg-xxx` 代码块点击（主）/ `https://trend-coach.local/segment/...` 链接拦截（备）。自定义 scheme 在 dsh Markdown 中不可点。
 4. 视频定位要求服务端支持 HTTP Range。
-5. 安装/打包：dsh 包 peer 版本精确锁 `0.2.1-rc.5`；新 profile 安装用 `dsh plugin --profile <name> add -w <tgz>`；Web UI 还需安装 `@deepseek-ai/dsh-web-app`。
-6. 插件最小权限：不注册 shell / 文件写入工具，不另起 HTTP 端口，不提交任何密钥。
+5. 安装/打包：dsh 包 peer 版本精确锁 `0.2.1-rc.5`；`engines.dsh` 是强制门禁（不满足会阻止安装/激活），保持 `>=0.2.1-rc.5 <0.3.0`；新 profile 安装用 `dsh plugin --profile <name> add -w <tgz>`；Web UI 还需安装 `@deepseek-ai/dsh-web-app`。
+6. 插件最小权限：不注册 shell / 文件写入工具，不另起 HTTP 端口，不提交任何密钥；TTS 等本地能力用浏览器标准 API（Web Speech），不调用系统命令。
+7. 加密 HLS：dsh 无原生 HLS，用内置 hls.js + MSE 动态加载；普通 MP4 走原生 `<video>`。
+8. 鉴权与数据：M2 用 credential-ref 内部 token，M3 转设备码短时 token；指标只走云端鉴权事件白名单，不接第三方分析 SDK。
 
 ## 常用命令
 
