@@ -52,7 +52,8 @@ npx --yes @deepseek-ai/dsh@0.2.1-rc.5 --profile <name> --port <port> --no-open
 - `src/auth.ts`：Host 授权（credential-ref、设备码登录/轮询、grant 存储、401 刷新、设备绑定）
 - `src/errors.ts`：Host 边界（入参/响应校验、错误映射、限长 JSON 读取）
 - `src/untrusted.ts`：Host 不可信文本处理（固定边界包裹、控制字符剥离、边界伪造转义）
-- `src/client/index.ts`：Browser 半（Remote spec、右栏面板含设备登录、播放器、引用拦截）
+- `src/client/index.ts`：Browser 半（Remote spec、问答面板含设备登录、播放器、引用拦截）
+- `src/client/catalog.ts`：体系页（课程树、知识点文章、Markdown 子集渲染、进度展示）
 - `scripts/build-client.mjs`：Client bundle 构建与 `__ModuleLoader__` 包装
 - `test/`：Host 边界、配置、不可信文本、mock 云端契约与发布包断言（`npm test`）
 - `cordis.patch.yml`：bundle patch（config 走 schema 默认值/环境变量）
@@ -63,7 +64,7 @@ npx --yes @deepseek-ai/dsh@0.2.1-rc.5 --profile <name> --port <port> --no-open
 - 工具/Remote/云端接口的字段变化：先更新 PRD §6 与架构 §6，再改代码。
 - 新增注册一律放进 `ctx.effect(...)` 并返回清理函数。
 - 云端响应在 Host 边界校验；非法数据报错，不静默丢弃。
-- 云端标题/正文渲染一律经 `untrusted.ts`（固定边界 + 转义 + 控制字符剥离），工具描述与渲染需声明内容不可信；面板与播放器常驻免责声明。
+- 云端标题/正文在工具输出中一律经 `untrusted.ts`（固定边界 + 转义 + 控制字符剥离），工具描述与渲染需声明内容不可信；体系页文章走客户端 Markdown 子集渲染（只生成 React 文本节点，不执行 HTML）；面板与播放器常驻免责声明。
 - 入参/响应边界：query 1–500 字符、topK 1–20、courseId/segmentId 白名单；响应 ≤512KiB、单片段文本 ≤4000 字符、标题与展示标题 ≤200 字符。错误统一映射 `RemoteError`（bad-request/cancelled/internal），日志不落 token、query 原文、设备 ID。
 - 注释只写“为什么”；不写多段注释。
 - 依赖：dsh 包与宿主精确同版本；不加无用运行时依赖。

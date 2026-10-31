@@ -21,7 +21,7 @@
 **不在范围内**
 
 - 云端检索、内容生产、后台管理的内部实现（仅在契约层约束）。
-- 多模态输入、AI 互动课堂、体系页的详细设计（M3–M5 单独补充设计章节）。
+- 多模态输入、AI 互动课堂、后台管理的详细设计（M4–M5 单独补充设计章节）；体系页契约见 §6.6。
 - dsh 本体与 cordis 框架的改造。
 
 ---
@@ -171,7 +171,7 @@ apply(ctx)
 | 片段元数据 | `GET /v1/kb/segments/{segmentId}` | 契约已定，mock 已验证 |
 | 账号 / 设备码 | 待定 | 契约已定，mock + dsh 已验（S2） |
 | 视频签名 HLS | `POST /v1/playback/sessions` | 契约已定，mock + 浏览器已验（S1） |
-| 学习进度 | 待定 | M3 |
+| 学习进度 | `GET /v1/catalog/*` + `PUT /v1/progress/knowledge-points/{id}` | 契约已定，云端 + mock 已验证（M3） |
 
 ---
 
@@ -422,6 +422,91 @@ Content-Type: application/json
 | `score ∈ [0, 1]` | 仅用于排序与展示，不作为可信度承诺 |
 | 不下发全库正文 | 只返回 Top-K 片段与元数据 |
 
+### 6.6 M3 体系页与学习进度（客户端、云端与 mock 已实现；后台内容管理待 M3.2）
+
+**Remote 方法（新增）**
+
+| 方法 | 入参（位置参数） | 结果 |
+|---|---|---|
+| `trendCoach/catalogCourses` | `signal` | `{courses: CatalogCourseSummary[]}` |
+| `trendCoach/catalogCourse` | `courseId: string, signal` | `{courseId, title, chapters[]}`（知识点含进度） |
+| `trendCoach/knowledgePoint` | `knowledgePointId: string, signal` | `{knowledgePointId, courseId, chapterId, title, article?, segmentId?, adjacentKnowledgePoints[]}` |
+| `trendCoach/reportProgress` | `knowledgePointId: string, watchedSec: number, completed: boolean, signal` | `{knowledgePointId, watchedSec, completed, updatedAt}` |
+
+**云端 HTTP（Bearer + `x-device-id`）**
+
+```http
+GET /v1/catalog/courses
+GET /v1/catalog/courses/{courseId}
+GET /v1/catalog/knowledge-points/{knowledgePointId}
+PUT /v1/progress/knowledge-points/{knowledgePointId}
+```
+
+课程列表：
+
+```jsonc
+{
+  "courses": [{
+    "courseId": "string",
+    "title": "string",
+    "chapterCount": 3,
+    "knowledgePointCount": 24,
+    "completedCount": 5
+  }]
+}
+```
+
+课程树：
+
+```jsonc
+{
+  "courseId": "string",
+  "title": "string",
+  "chapters": [{
+    "chapterId": "string",
+    "title": "string",
+    "position": 0,
+    "knowledgePoints": [{
+      "knowledgePointId": "string",
+      "title": "string",
+      "position": 0,
+      "segmentId": "seg-...",
+      "watchedSec": 120,
+      "completed": false
+    }]
+  }]
+}
+```
+
+知识点详情：
+
+```jsonc
+{
+  "knowledgePointId": "string",
+  "courseId": "string",
+  "chapterId": "string",
+  "title": "string",
+  "article": { "markdown": "string", "version": 1, "publishedAt": 1760000000000 },
+  "segmentId": "seg-...",
+  "adjacentKnowledgePoints": [{ "knowledgePointId": "string", "title": "string" }]
+}
+```
+
+进度上报：
+
+```jsonc
+{ "watchedSec": 120, "completed": false }
+```
+
+- 只返回 `published` 课程、章节、知识点与文章；未发布或不存在返回 `404`。
+- 课程列表 ≤50；单课程 ≤50 章节、总知识点 ≤1000；标题 ≤200 字符；单次响应 ≤512KiB。
+- 课程树不携带 `startSec/endSec`；播放定位仍以 `getSegment` 的权威起止秒为准。`segmentId` 可缺省，表示该知识点暂无可用片段。
+- `article` 可为 `null`；`markdown` ≤20000 字符，只允许 Markdown 子集，不执行 HTML/脚本。文章与标题按不可信内容处理，Host 校验长度；客户端使用内置 Markdown 子集渲染器，只生成 React 元素，不使用 `dangerouslySetInnerHTML`，不加载外部资源。
+- `watchedSec` 为整数秒，范围 0–86400；云端按 `max(旧值, 新值)` 保存，`completed` 一旦为 `true` 不可回退；接口幂等，重复上报返回同一结果。
+- `adjacentKnowledgePoints` ≤5 条且仅含 ID 与标题，不携带时间点。
+- 进度属于业务写入，不走 `POST /v1/events`，不受指标同意开关影响；只允许当前授权设备读写本人进度，设备不匹配 `403`，超限 `429`。
+- 后台管理接口不属于插件契约，学员令牌不可访问。体系页到片段跳转 ≤3 次点击；播放器在 30s、暂停、结束与片段播完时上报，失败只记 debug 日志，不阻塞播放。
+
 ---
 
 ## 7. 关键设计决策（ADR）
@@ -581,7 +666,7 @@ docs/                        # 需求、架构、规范
 
 ## 16. 开放问题
 
-1. 设备码主流程已按轮询实现并验证（S2）；剩余待账号后台定稿：access/refresh token 实际 TTL、并发设备上限、服务端主动吊销与多设备登录策略。credential-ref 仍作为内部 token 回退。
+1. 设备码主流程已按轮询实现并验证（S2）；账号与后台登录方式已定（M3.1：管理员创建账号 + 密码/邀请码，设备授权页绑定账号）。剩余待定：access/refresh token 实际 TTL、并发设备上限与多设备登录策略。credential-ref 仍作为内部 token 回退。
 2. 引用链接的 host（`trend-coach.local`）是否长期保留；若云端提供真实域名，拦截逻辑需同时支持，且不得放宽到任意 host。
 3. 插件侧提示注入防护已落地（S6：固定边界 + 转义 + 控制字符剥离）；云端片段文本长度上限仍需在 M2 与云端定稿（建议单片段 ≤ 2KB、总 ≤ 12KB，超限截断并标记，当前插件按 4KB/512KiB 校验）。
 4. dsh 预览版后续版本若改变 Remote/slot API，升级窗口与回滚策略待定；`engines.dsh` 需随兼容矩阵同步收紧。
@@ -599,10 +684,10 @@ docs/                        # 需求、架构、规范
 | F1 课程问答与视频溯源 | P0 | §4.1、§5.1、§5.2、§6.1–6.4 | 已闭合 | mock 展示字段（S5）+ 真实云端检索/播放/引用定位联调（S7） |
 | F1.3 自动播放 30–60s、片段高亮、水印 | P0 | §5.2 播放语义、§6.4、A11 | 已闭合 | mock（S1+S3）+ 真实云端签名 HLS 解密播放（S7） |
 | F1.4 未覆盖给最近知识点 | P0 | §6.1 `relatedKnowledgePoints` | 已闭合 | mock 展示（S3）+ 真实云端低置信过滤与空召回相邻知识点（S7）；阈值仍需 M1 评估集校准 |
-| F2 知识体系化呈现 | P0 | §4.3（云端契约视角） | 待设计 | M3 体系页与后台接口章节 |
+| F2 知识体系化呈现 | P0 | §4.3、§6.6 | 部分 | 体系页、文章阅读与学习进度已实现；后台内容管理待 M3.2 |
 | F3 学习场景即时提问（多模态） | P0 | §1 范围外，M4 补充 | 待设计 | 选中文本/页面上下文采集方式、ASR 接入 |
 | F4 AI 互动课堂 | P1 | A12、M5 | 待设计 | 课堂运行时章节、Web Speech 验证 |
-| F5 后台管理 | P0 | 云端职责，M3 | 待设计 | 后台接口与权限契约 |
+| F5 后台管理 | P0 | 云端职责，M3 | 部分 | 账号与后台登录、React 内容控制台待 M3.1/M3.2 验收 |
 | NFR 性能（检索 P95 ≤ 300ms、首屏 ≤ 2s、起播 ≤ 2s） | P0 | §11 | 部分 | 真实环境压测；hls.js 懒加载 |
 | NFR 安全（最小权限、不可信内容、签名播放、水印） | P0 | §10、A10、A11–A13、A16 | 部分 | 设备码/凭据、水印、输入/响应上限、日志脱敏、提示注入防护（S1–S7）、真实云端 429 提示（S9）已验证；真实环境压测待 M6 |
 | NFR 合规（风险提示、AI 合规、隐私） | P0 | §10、PRD §7 | 部分 | 面板与播放器常驻免责声明（S6）、指标同意与撤回（S8）、退出并注销与服务端吊销（S9）已验证；账号级删除随 M3 |
