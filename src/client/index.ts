@@ -1,9 +1,17 @@
 import type { Context } from '@deepseek-ai/cordis'
 import * as React from 'react'
+import Hls from 'hls.js'
 import { z } from 'zod'
 import { createTypertRemoteInfo } from '@deepseek-ai/dsh-typert-protocol/remote-info'
 import type { TypertRemoteSpec } from '@deepseek-ai/dsh-typert-protocol/types'
-import type { RemoteSearchResult, SearchPayload, SearchSegment } from './dsh.js'
+import type {
+  PlaybackSession,
+  RemotePlaybackResult,
+  RemoteSearchResult,
+  RemoteSegmentResult,
+  SearchPayload,
+  SearchSegment,
+} from './dsh.js'
 
 export const name = 'trend-coach-client'
 
@@ -14,7 +22,7 @@ const PLAYER_ID = 'dsh-plugin-trend-coach-player'
 const PLAYER_KIND = 'trend-coach-player'
 const CITATION_HOST = 'trend-coach.local'
 const SEGMENT_CODE = /^seg-[A-Za-z0-9._-]+$/
-const DEFAULT_VIDEO = 'http://127.0.0.1:3939/media/lesson.mp4'
+const SEGMENT_CLIP_SEC = 60
 
 const segmentSchema = z.object({
   segmentId: z.string(),
@@ -26,6 +34,13 @@ const segmentSchema = z.object({
   endSec: z.number(),
   text: z.string(),
   score: z.number(),
+})
+
+const playbackSessionSchema = z.object({
+  sessionId: z.string(),
+  playlistUrl: z.string(),
+  expiresAt: z.number(),
+  watermark: z.object({ label: z.string() }).optional(),
 })
 
 const resultSchema = z.object({
@@ -79,7 +94,30 @@ const spec: TypertRemoteSpec = {
       cancellation: { parameter: 'signal' },
       result: codec('dsh-plugin-trend-coach#trendCoach/getSegment:result', () => segmentSchema),
     },
+    'trendCoach/createPlaybackSession': {
+      service: 'trendCoach',
+      invocation: { kind: 'direct' },
+      parameters: [
+        {
+          name: 'segmentId',
+          wire: 'segmentId',
+          source: 'json',
+          codec: codec('dsh-plugin-trend-coach#trendCoach/createPlaybackSession:segmentId', () => z.string()),
+          strictCodec: codec('dsh-plugin-trend-coach#trendCoach/createPlaybackSession:segmentId', () => z.string()),
+        },
+      ],
+      cancellation: { parameter: 'signal' },
+      result: codec(
+        'dsh-plugin-trend-coach#trendCoach/createPlaybackSession:result',
+        () => playbackSessionSchema,
+      ),
+    },
   },
+}
+
+interface TrendCoachRemote {
+  getSegment(segmentId: string): Promise<RemoteSegmentResult>
+  createPlaybackSession(segmentId: string): Promise<RemotePlaybackResult>
 }
 
 interface PlayerParams {
@@ -88,6 +126,8 @@ interface PlayerParams {
   startSec?: number
   endSec?: number
   src?: string
+  watermark?: string
+  error?: string
 }
 
 interface TabInfoHook {
@@ -104,7 +144,7 @@ interface TabInfoHook {
 
 interface PanelProps {
   search: (query: string) => Promise<RemoteSearchResult>
-  openSegment: (params: PlayerParams) => void
+  openSegment: (params: PlayerParams) => Promise<void>
 }
 
 interface PlayerProps {
@@ -143,12 +183,18 @@ function Panel({ search, openSegment }: PanelProps): React.ReactElement {
         React.createElement('button', {
           key: segment.segmentId,
           type: 'button',
-          onClick: () => openSegment({
-            segmentId: segment.segmentId,
-            title: segment.title,
-            startSec: segment.startSec,
-            endSec: segment.endSec,
-          }),
+          onClick: () => {
+            setError(undefined)
+            void openSegment({
+              segmentId: segment.segmentId,
+              title: segment.title,
+              startSec: segment.startSec,
+              endSec: segment.endSec,
+            }).catch((openError: unknown) => {
+              console.error('[trend-coach] open segment failed', openError)
+              setError('打开播放器失败，请稍后重试')
+            })
+          },
           style: {
             display: 'block',
             width: '100%',
@@ -181,6 +227,10 @@ function Panel({ search, openSegment }: PanelProps): React.ReactElement {
   )
 }
 
+function isHlsSource(src: string): boolean {
+  return /\.m3u8(?:$|\?)/i.test(src)
+}
+
 function Player({ useTabInfo }: PlayerProps): React.ReactElement {
   const info = useTabInfo === undefined ? undefined : useTabInfo()
   const navigation = info?.tab.navigation
@@ -188,11 +238,50 @@ function Player({ useTabInfo }: PlayerProps): React.ReactElement {
   const revision = navigation?.revision ?? 0
   const startSec = typeof params.startSec === 'number' ? params.startSec : undefined
   const endSec = typeof params.endSec === 'number' ? params.endSec : undefined
-  const src = params.src ?? DEFAULT_VIDEO
+  const src = params.src
 
   const videoRef = React.useRef<HTMLVideoElement | null>(null)
   const [current, setCurrent] = React.useState(0)
   const [ready, setReady] = React.useState(false)
+  const [needsGesture, setNeedsGesture] = React.useState(false)
+  const [pausedAtClip, setPausedAtClip] = React.useState(false)
+  const [mediaError, setMediaError] = React.useState<string | undefined>(params.error)
+
+  const clipEnd = startSec === undefined
+    ? undefined
+    : Math.min(endSec ?? startSec + SEGMENT_CLIP_SEC, startSec + SEGMENT_CLIP_SEC)
+
+  React.useEffect(() => {
+    setPausedAtClip(false)
+    setNeedsGesture(false)
+    setMediaError(params.error)
+  }, [startSec, revision, src, params.error])
+
+  React.useEffect(() => {
+    const video = videoRef.current
+    if (video === null || src === undefined || !isHlsSource(src)) return
+
+    // Chrome on macOS answers "maybe" for native HLS without actually playing it,
+    // so only fall back to the native pipeline when hls.js has no MSE support.
+    if (!Hls.isSupported()) {
+      if (video.canPlayType('application/vnd.apple.mpegurl') === '') {
+        setMediaError('当前环境不支持 HLS 播放')
+        return
+      }
+      video.src = src
+      return
+    }
+
+    const hls = new Hls({ enableWorker: false })
+    hls.on(Hls.Events.ERROR, (_event, data) => {
+      if (!data.fatal) return
+      setMediaError(data.type === Hls.ErrorTypes.NETWORK_ERROR ? '播放地址无效或已过期' : '视频解密或解码失败')
+    })
+    hls.loadSource(src)
+    hls.attachMedia(video)
+    hls.on(Hls.Events.MANIFEST_PARSED, () => setReady(true))
+    return () => hls.destroy()
+  }, [src])
 
   React.useEffect(() => {
     const video = videoRef.current
@@ -203,36 +292,89 @@ function Player({ useTabInfo }: PlayerProps): React.ReactElement {
       } catch {
         // metadata still loading
       }
+      void video.play().then(() => {
+        setNeedsGesture(false)
+      }).catch(() => {
+        setNeedsGesture(true)
+      })
     }
     if (video.readyState >= 1) seek()
     else video.addEventListener('loadedmetadata', seek, { once: true })
     return () => video.removeEventListener('loadedmetadata', seek)
   }, [startSec, revision, src])
 
+  const onTimeUpdate = (event: React.SyntheticEvent<HTMLVideoElement>) => {
+    const video = event.currentTarget
+    setCurrent(video.currentTime)
+    if (clipEnd !== undefined && !video.paused && video.currentTime >= clipEnd) {
+      video.pause()
+      setPausedAtClip(true)
+    }
+  }
+
   const range = startSec !== undefined && endSec !== undefined
     ? `片段 ${startSec}s – ${endSec}s`
     : startSec !== undefined ? `定位 ${startSec}s` : '未指定片段'
+
+  if (src === undefined) {
+    return React.createElement(
+      'div',
+      { style: { padding: 12, fontSize: 13, lineHeight: 1.5, display: 'flex', flexDirection: 'column', gap: 8 } },
+      React.createElement('h3', { style: { margin: 0 } }, params.title ?? params.segmentId ?? '课程视频'),
+      React.createElement('p', { style: { margin: 0, color: '#c0392b' } }, mediaError ?? '缺少播放地址'),
+    )
+  }
+
+  const watermark = params.watermark ?? 'trend-coach'
+  const corner = Math.floor(current / 15) % 4
+  const watermarkStyle: React.CSSProperties = {
+    position: 'absolute',
+    color: 'rgba(255, 255, 255, 0.55)',
+    fontSize: 11,
+    textShadow: '0 1px 2px rgba(0, 0, 0, 0.8)',
+    pointerEvents: 'none',
+    ...(corner === 0 ? { top: 10, left: 10 } : {}),
+    ...(corner === 1 ? { top: 10, right: 10 } : {}),
+    ...(corner === 2 ? { bottom: 44, right: 10 } : {}),
+    ...(corner === 3 ? { bottom: 44, left: 10 } : {}),
+  }
 
   return React.createElement(
     'div',
     { style: { padding: 12, fontSize: 13, lineHeight: 1.5, display: 'flex', flexDirection: 'column', gap: 8 } },
     React.createElement('h3', { style: { margin: 0 } }, params.title ?? params.segmentId ?? '课程视频'),
     React.createElement('p', { style: { margin: 0, color: '#666' } }, range),
-    React.createElement('video', {
-      ref: videoRef,
-      src,
-      controls: true,
-      preload: 'metadata',
-      style: { width: '100%', background: '#000' },
-      onLoadedMetadata: () => setReady(true),
-      onTimeUpdate: (event: React.SyntheticEvent<HTMLVideoElement>) => setCurrent(event.currentTarget.currentTime),
-    }),
+    React.createElement('div', { style: { position: 'relative' } },
+      React.createElement('video', {
+        ref: videoRef,
+        src: isHlsSource(src) ? undefined : src,
+        controls: true,
+        preload: 'metadata',
+        style: { width: '100%', background: '#000' },
+        onLoadedMetadata: () => setReady(true),
+        onTimeUpdate,
+        onError: () => setMediaError('视频加载失败'),
+      }),
+      React.createElement('div', { style: watermarkStyle }, `${watermark} · ${Math.floor(current)}s`),
+    ),
+    needsGesture || pausedAtClip
+      ? React.createElement('button', {
+        type: 'button',
+        onClick: () => {
+          setPausedAtClip(false)
+          void videoRef.current?.play().then(() => setNeedsGesture(false)).catch(() => setNeedsGesture(true))
+        },
+      }, pausedAtClip ? '片段已播放完毕，继续播放' : '点击播放')
+      : null,
+    mediaError !== undefined
+      ? React.createElement('p', { style: { margin: 0, color: '#c0392b' } }, mediaError)
+      : null,
     React.createElement('p', { style: { margin: 0, color: '#666' } },
       ready ? `当前播放位置 ${current.toFixed(1)}s` : '视频加载中…'),
   )
 }
 
-function parseCitation(raw: string): PlayerParams | undefined {
+function parseCitation(raw: string): string | undefined {
   let url: URL
   try {
     url = new URL(raw)
@@ -241,26 +383,54 @@ function parseCitation(raw: string): PlayerParams | undefined {
   }
   if (url.hostname !== CITATION_HOST || !url.pathname.startsWith('/segment/')) return undefined
   const segmentId = decodeURIComponent(url.pathname.slice('/segment/'.length))
-  if (segmentId === '') return undefined
-  const start = Number(url.searchParams.get('t'))
-  const end = Number(url.searchParams.get('e'))
-  return {
-    segmentId,
-    startSec: Number.isFinite(start) ? start : undefined,
-    endSec: Number.isFinite(end) ? end : undefined,
-  }
+  return SEGMENT_CODE.test(segmentId) ? segmentId : undefined
 }
 
 export function apply(ctx: Context): void {
   ;(globalThis as Record<string, unknown>).__TREND_COACH_CLIENT__ = true
   console.info('[trend-coach] client plugin loaded (remote spike)')
 
-  const openSegment = (params: PlayerParams) => {
+  const openPlayer = (params: PlayerParams) => {
     try {
       ctx.sidebarRight.openTab(PLAYER_KIND, { params: { ...params } })
     } catch (error) {
       console.error('[trend-coach] open player tab failed', error)
     }
+  }
+
+  const openSegment = async (remote: TrendCoachRemote, params: PlayerParams): Promise<void> => {
+    if (params.segmentId === undefined) {
+      openPlayer({ ...params, error: '缺少引用片段' })
+      return
+    }
+    const session: RemotePlaybackResult = await remote.createPlaybackSession(params.segmentId)
+    if (!session.ok) {
+      console.error('[trend-coach] createPlaybackSession failed', session.error)
+      openPlayer({ ...params, error: '播放地址获取失败，请稍后重试' })
+      return
+    }
+    const value: PlaybackSession = session.value
+    openPlayer({
+      ...params,
+      src: value.playlistUrl,
+      watermark: value.watermark?.label,
+    })
+  }
+
+  const openCitation = async (remote: TrendCoachRemote, segmentId: string): Promise<void> => {
+    const result = await remote.getSegment(segmentId)
+    if (!result.ok) {
+      console.error('[trend-coach] getSegment failed', result.error)
+      openPlayer({ segmentId, error: '引用片段不可用，可能已下架' })
+      return
+    }
+    const segment = result.value
+    await openSegment(remote, {
+      segmentId: segment.segmentId,
+      title: segment.title,
+      startSec: segment.startSec,
+      endSec: segment.endSec,
+    })
   }
 
   const info = createTypertRemoteInfo(spec, z)
@@ -275,7 +445,7 @@ export function apply(ctx: Context): void {
           key: TAB_ID,
           inject: () => ({
             search: (query: string) => scoped.remote.trendCoach.search(query, 5),
-            openSegment,
+            openSegment: (params: PlayerParams) => openSegment(scoped.remote.trendCoach, params),
           }),
         }, Panel))
 
@@ -287,11 +457,11 @@ export function apply(ctx: Context): void {
 
             const anchor = target.closest('a[href]')
             if (anchor instanceof HTMLAnchorElement) {
-              const citation = parseCitation(anchor.href)
-              if (citation !== undefined) {
+              const segmentId = parseCitation(anchor.href)
+              if (segmentId !== undefined) {
                 event.preventDefault()
                 event.stopPropagation()
-                openSegment(citation)
+                void openCitation(scoped.remote.trendCoach, segmentId)
               }
               return
             }
@@ -301,19 +471,7 @@ export function apply(ctx: Context): void {
             if (segmentId === undefined || !SEGMENT_CODE.test(segmentId)) return
             event.preventDefault()
             event.stopPropagation()
-            void scoped.remote.trendCoach.getSegment(segmentId).then((result) => {
-              if (!result.ok) {
-                console.error('[trend-coach] getSegment failed', result.error)
-                return
-              }
-              const segment = result.value
-              openSegment({
-                segmentId: segment.segmentId,
-                title: segment.title,
-                startSec: segment.startSec,
-                endSec: segment.endSec,
-              })
-            })
+            void openCitation(scoped.remote.trendCoach, segmentId)
           }
           document.addEventListener('click', onClick, true)
           return () => document.removeEventListener('click', onClick, true)

@@ -3,4 +3,5 @@ lib/
 *.tgz
 .playwright-mcp/
 spike/*.log
+spike/media/hls/
 .DS_Store

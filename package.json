@@ -26,7 +26,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/build-client.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "mock": "node spike/mock-kb-server.mjs"
+    "mock": "node spike/build-hls.mjs && node spike/mock-kb-server.mjs",
+    "mock:rebuild": "node spike/build-hls.mjs --force"
   },
   "dsh": {
     "bundle": {
@@ -50,6 +51,7 @@
     "@types/node": "^22.0.0",
     "@types/react": "^19.3.0",
     "esbuild": "^0.25.0",
+    "hls.js": "^1.7.4",
     "typescript": "^5.9.0",
     "zod": "4.4.3"
   }

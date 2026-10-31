@@ -25,6 +25,17 @@ export type RemoteSegmentResult =
   | { ok: true; value: SearchSegment }
   | { ok: false; error: { code: string; message: string } }
 
+export interface PlaybackSession {
+  sessionId: string
+  playlistUrl: string
+  expiresAt: number
+  watermark?: { label: string }
+}
+
+export type RemotePlaybackResult =
+  | { ok: true; value: PlaybackSession }
+  | { ok: false; error: { code: string; message: string } }
+
 interface SlotsService {
   inject(key: string, callback: () => void | (() => void)): void
   register(options: Record<string, unknown>, component: unknown): () => void
@@ -54,6 +65,7 @@ interface ClientRemoteService {
   trendCoach: {
     search(query: string, topK: number): Promise<RemoteSearchResult>
     getSegment(segmentId: string): Promise<RemoteSegmentResult>
+    createPlaybackSession(segmentId: string): Promise<RemotePlaybackResult>
   }
 }
 

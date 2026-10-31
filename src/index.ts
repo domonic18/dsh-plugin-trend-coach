@@ -36,6 +36,13 @@ interface SearchResult {
   segments: Segment[]
 }
 
+interface PlaybackSession {
+  sessionId: string
+  playlistUrl: string
+  expiresAt: number
+  watermark?: { label: string }
+}
+
 const outputSchema = {
   type: 'object',
   properties: {
@@ -171,6 +178,46 @@ async function getSegment(
   return payload
 }
 
+function isPlaybackSession(value: unknown): value is PlaybackSession {
+  if (typeof value !== 'object' || value === null) return false
+  const candidate = value as Record<string, unknown>
+  const watermark = candidate.watermark
+  return (
+    typeof candidate.sessionId === 'string' &&
+    typeof candidate.playlistUrl === 'string' &&
+    typeof candidate.expiresAt === 'number' &&
+    (watermark === undefined ||
+      (typeof watermark === 'object' && watermark !== null && typeof (watermark as Record<string, unknown>).label === 'string'))
+  )
+}
+
+async function createPlaybackSession(
+  config: Config,
+  segmentId: string,
+  signal: AbortSignal,
+): Promise<PlaybackSession> {
+  const headers: Record<string, string> = { 'content-type': 'application/json' }
+  if (config.apiToken) headers.authorization = `Bearer ${config.apiToken}`
+
+  const combined = AbortSignal.any([signal, AbortSignal.timeout(config.timeoutMs)])
+  const response = await fetch(`${config.baseUrl}/v1/playback/sessions`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ segmentId }),
+    signal: combined,
+  })
+
+  if (!response.ok) {
+    throw new Error(`播放会话创建失败: HTTP ${response.status} ${response.statusText}`)
+  }
+
+  const payload: unknown = await response.json()
+  if (!isPlaybackSession(payload)) {
+    throw new Error('播放会话响应不合法')
+  }
+  return payload
+}
+
 class TrendCoachService extends TypertRemoteService {
   private readonly config: Config
 
@@ -187,6 +234,11 @@ class TrendCoachService extends TypertRemoteService {
   @Remote
   async getSegment(segmentId: string, signal: AbortSignal): Promise<Segment> {
     return await getSegment(this.config, segmentId, signal)
+  }
+
+  @Remote
+  async createPlaybackSession(segmentId: string, signal: AbortSignal): Promise<PlaybackSession> {
+    return await createPlaybackSession(this.config, segmentId, signal)
   }
 }
 
