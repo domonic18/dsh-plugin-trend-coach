@@ -1,10 +1,10 @@
-# 趋势伴学插件 · 架构设计（v1.2）
+# 趋势伴学插件 · 架构设计（v1.3）
 
-- 状态：v1.2，基于 PRD v1.3 与 dsh 0.2.1-rc.5 实测/源码调研结论；补齐需求覆盖矩阵与待决策清单
+- 状态：v1.3，基于 PRD v1.3 与 dsh 0.2.1-rc.5 实测/源码调研结论；补齐需求覆盖矩阵与待决策清单
 - 日期：2026-10-31
 - 上游文档：[产品需求文档](../requirements/product-requirements.md)
 - 配套规范：[项目规范](../conventions/project-conventions.md)
-- 版本变更：v1.2 落地播放会话契约（`POST /v1/playback/sessions`）、媒体 CORS 要求、引用时间点只信 `getSegment`、hls.js 优先于 `canPlayType` 的选择顺序，并记录 S1 端到端验证结果；v1.1 补齐播放语义、HLS 方案、鉴权分期、水印、TTS、指标、显示字段/相邻知识点、`engines.dsh` 与 §17/§18。
+- 版本变更：v1.3 落地指标事件同意与上报（`GET/PUT /v1/events/consent` + 三类白名单事件），并记录 S8 真实云端联调结果；v1.2 落地播放会话契约（`POST /v1/playback/sessions`）、媒体 CORS 要求、引用时间点只信 `getSegment`、hls.js 优先于 `canPlayType` 的选择顺序，并记录 S1 端到端验证结果；v1.1 补齐播放语义、HLS 方案、鉴权分期、水印、TTS、指标、显示字段/相邻知识点、`engines.dsh` 与 §17/§18。
 
 ---
 
@@ -440,7 +440,7 @@ Content-Type: application/json
 | A10 | credential-ref 内部 token 作回退，设备码换短时 token（S2 已闭环） | 公测前必须有账号体系（D5），但内部试用不应被账号体系阻塞 | 云端需实现设备码/刷新/设备绑定；Host 统一走 AuthManager 处理 401/403 |
 | A11 | 水印先做客户端动态覆盖层，取证级水印后置 | 零云端改造即可上线，满足「提高抓取成本」的定位 | 覆盖层可被系统录屏绕过；M4 评估服务端取证水印 |
 | A12 | TTS 使用浏览器 Web Speech API（系统语音） | dsh 无 TTS 服务；Web Speech 不需 shell、不引入外网依赖，符合最小权限 | 音色与质量依赖操作系统；M5 需验证中文可用性并保留降级文案 |
-| A13 | 指标走云端鉴权事件，不接第三方分析 SDK | dsh 产品分析仅桌面端，且不把第三方标识作为分析维度 | 需云端埋点与同意管理；本地默认关闭、可撤回 |
+| A13 | 指标走云端鉴权事件，不接第三方分析 SDK | dsh 产品分析仅桌面端，且不把第三方标识作为分析维度 | 已落地事件白名单与同意开关（S8），默认关闭、可撤回 |
 | A14 | 兼容性以 `engines.dsh` + 市场兼容性判据为准 | 插件管理器按 `engines.dsh`（否则 DSH peer 依赖）拦截安装与激活 | 版本范围必须收紧，发布前跑最低支持版本矩阵 |
 | A15 | 播放地址由 Host 换取签名会话，浏览器不持 Bearer | Bearer 留在 Host；签名 URL 只对一次播放有效，可按用户/设备/并发约束 | 多一个端点与会话 TTL；过期后需重新换会话 |
 | A16 | 设备 grant 存 dsh credentials（`credentialKey('trend-coach','device')`），刷新走 `modifyRecord()` | 宿主提供 0600 文件与跨进程串行读改写，避免并发刷新互相覆盖；插件不自定义密钥落盘 | 依赖 `credentials` 服务且必须静态 `inject`；`$DSH_HOME/.credentials.yaml` 的迁移由 dsh 管理 |
@@ -501,9 +501,10 @@ Content-Type: application/json
 - 统一使用 `ctx.logger`，实例命名 `ctx.logger('trend-coach')`；错误日志带包名前缀。
 - 失败日志只记录操作名与错误类型（如 `AuthError`、`UpstreamError`），不记录 token、deviceId、query 原文或上游响应体。
 - 一期不接入第三方分析 SDK：dsh 自带的产品分析仅覆盖桌面端，且不把第三方插件标识作为分析维度（A13）。
-- 指标上报走云端鉴权事件接口，与账号绑定，字段最小化；未登录或不 consent 时不上报。
-- 事件白名单（M2 起）：`search_requested`（耗时、topK、命中数、是否空召回）、`citation_clicked`（segmentId）、`player_started`（起播耗时、是否自动播放被拒）；**不含** query 原文、回答内容、完整播放地址。
-- 本地默认只写日志便于自检；云端开关与同意流程在 M2 随账号体系落地，PRD §8 指标由此聚合。
+- 指标上报走云端鉴权事件接口，与账号绑定，字段最小化；未登录或未同意时不上报。
+- 同意状态存云端 `users.events_consent`（默认 `false`），插件经 `GET/PUT /v1/events/consent` 读写；右栏面板提供开关，撤销后 Host 立即停止上报（已接收数据不回溯删除）。
+- 事件白名单：`search_requested`（耗时、topK、命中数、是否空召回）、`citation_clicked`（segmentId）、`player_started`（起播耗时、是否自动播放被拒）；**不含** query 原文、回答内容、完整播放地址。
+- 上报点：Host 在检索成功（工具与面板共用 `searchKnowledge` 路径）、引用点击、播放器首次 `playing` 时尽力上报；失败只记 debug 日志，不影响检索与播放主流程。
 - 关键错误按 §9 的错误码分桶，避免把「空召回」与「服务故障」混在同一指标。
 
 ---
@@ -520,6 +521,7 @@ src/
 │   ├── config.ts            # 配置 schema、环境/日志校验、baseUrl 规范化
 │   ├── log.ts               # 按 logLevel 过滤日志
 │   ├── cloud-client.ts      # 云端请求与响应结构校验
+│   ├── events.ts            # 指标事件上报与同意状态缓存
 │   ├── tool.ts              # trend_coach_search 工具与渲染
 │   └── service.ts           # TrendCoach Remote 服务
 ├── shared/
@@ -603,8 +605,8 @@ docs/                        # 需求、架构、规范
 | F5 后台管理 | P0 | 云端职责，M3 | 待设计 | 后台接口与权限契约 |
 | NFR 性能（检索 P95 ≤ 300ms、首屏 ≤ 2s、起播 ≤ 2s） | P0 | §11 | 部分 | 真实环境压测；hls.js 懒加载 |
 | NFR 安全（最小权限、不可信内容、签名播放、水印） | P0 | §10、A10、A11–A13、A16 | 部分 | 设备码/凭据、水印、输入/响应上限、日志脱敏、提示注入防护已验证（S1–S7）；剩真实云端 429 限流提示验证 |
-| NFR 合规（风险提示、AI 合规、隐私） | P0 | §10、PRD §7 | 部分 | 面板与播放器常驻免责声明已验证（S6）；剩注销与同意流程 |
-| 指标（激活/引用点击/满意度等） | P0 | §12、A13 | 部分 | 云端事件接口 + 同意管理 |
+| NFR 合规（风险提示、AI 合规、隐私） | P0 | §10、PRD §7 | 部分 | 面板与播放器常驻免责声明已验证（S6），指标同意与撤回已验证（S8）；剩注销流程 |
+| 指标（激活/引用点击/满意度等） | P0 | §12、A13 | 部分 | 检索/引用/播放三类事件与同意开关已验证（S8）；满意度（点赞/点踩）与激活率聚合未接入 |
 
 **S1 验证记录（2026-10-31，mock + dsh 0.2.1-rc.5 + Chrome）**：`POST /v1/playback/sessions` → 签名 m3u8 → key/分片（均带 token）→ hls.js 解密播放，起播定位到 `startSec`；`min(endSec, start+60)` 片尾暂停与“继续播放”提示生效；`<code>seg-xxx</code>` 与 `trend-coach.local` 链接两条引用路径都经 `getSegment` 取权威起止秒，URL 里的 `t/e` 被忽略。CORS、错误 403（token 无效/过期）已验证。
 
@@ -620,7 +622,9 @@ docs/                        # 需求、架构、规范
 
 **S7 验证记录（2026-10-31，真实云端 trend-coach-cloud + PostgreSQL + dsh 0.2.1-rc.5 + Chrome）**：面板设备码重新授权成功；检索「均线」返回 `seg-tc101-m2-kp2-1`，课程/章节/知识点标题与 920–1150s 正确；点击结果打开课程视频，加密 HLS 经 hls.js/MSE 解密，播放位置 920.5s → 929.9s，`readyState=4`、无错误；对话触发 `trend_coach_search`，模型 5s 内产出 2 条引用并附免责声明；点击引用定位约 923s。服务端吊销 access token 后，下一次检索按 `401 → /v1/auth/refresh 200 → 检索 200` 自动恢复。联调中发现并修复低置信误召回：原 `SEARCH_MIN_SIMILARITY=0.05` 让无关 query「量子纠缠与超导」仅凭单个补位 trigram（0.0588）命中；现区分召回阈值（0.05，只捞候选）与引用置信阈值（`SEARCH_MIN_CONFIDENCE=0.15`），低于置信度的候选不返回，全部过滤后按未覆盖处理。修复后该 query 显示「课程未覆盖该问题。」，「趋势反转怎么判断」的 0.1 低置信片段被过滤；临时下架「均线」片段后，面板显示「课程未覆盖」及「相关知识点（仅标题）：均线的方向与排列 · KP-2.1」，恢复后命中恢复。云端新增契约测试覆盖低置信按未覆盖处理与相邻知识点回退。
 
-**M2 前必须闭合**：真实云端检索返回展示字段与播放语义已闭合（S7）。设备码授权、错误码映射与日志脱敏（S2/S4）、展示字段与回退（S5）、提示注入防护与常驻免责声明（S6）、低置信回退（S7）已闭合。剩余：事件同意与上报；检索阈值按 M1 评估集校准。
+**S8 验证记录（2026-10-31，真实云端 trend-coach-cloud + PostgreSQL + dsh 0.2.1-rc.5 + Chrome）**：右栏面板新增指标同意开关，默认未勾选；授权后读取 `GET /v1/events/consent` 显示 `false`，未同意时检索后云端 `events` 表无新记录。勾选后 `PUT /v1/events/consent` 返回 `true` 并落库：面板检索上报 `search_requested`（hits=3、topK=5、empty=false、6ms），点击结果上报 `citation_clicked`（segmentId），播放器首次 `playing` 上报 `player_started`（startupMs=36、autoplayBlocked=false）；对话触发 `trend_coach_search` 上报 hits=1，点击回答内引用链接再上报 `citation_clicked`，事件均不含 query 原文或回答内容。取消勾选后云端同意状态回到 `false`，再次检索不再新增事件。云端契约测试覆盖同意默认值/读写/撤回与事件门禁，插件 mock 契约测试同步覆盖。
+
+**M2 前必须闭合**：真实云端检索返回展示字段与播放语义已闭合（S7）。设备码授权、错误码映射与日志脱敏（S2/S4）、展示字段与回退（S5）、提示注入防护与常驻免责声明（S6）、低置信回退（S7）、事件同意与上报（S8）已闭合。剩余：检索阈值按 M1 评估集校准；注销流程。
 
 ---
 
