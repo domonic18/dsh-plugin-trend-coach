@@ -95,6 +95,7 @@
 | 设备绑定与退出 | 授权与业务请求绑定 `deviceId`，`x-device-id` 不匹配返回 403；退出登录删除本地 grant，后续检索提示未授权 |
 | 未覆盖问题兜底 | 无召回时返回 `relatedKnowledgePoints`（仅标题），工具渲染与右栏面板均列出；回答明确「课程未覆盖」，不生成引用或时间点 |
 | 片段区间高亮 | 播放器展示 `[startSec, endSec]` 高亮条与当前位置标记；seek 到起播秒、播至 `min(endSec, start+60)` 自动暂停 |
+| 展示字段与回退 | 检索与片段详情返回 `courseTitle/chapterTitle/knowledgePointTitle`；工具渲染与面板按「课程/章节/知识点」展示，字段缺失时回退显示 ID，不影响引用 |
 | 入参/响应边界 | query 1–500 字符、topK 1–20、courseId/segmentId 白名单；响应 ≤512KiB、片段文本 ≤4000 字符；非法数据整体失败 |
 | 错误映射与日志脱敏 | 401/403/404/429/5xx/超时/网络/响应不合法映射为可读中文文案；Host 与 mock 日志不含 token、完整 query、userCode 或完整 deviceId |
 
@@ -269,7 +270,7 @@
 - 端点：`POST /v1/kb/search`，HTTPS + 账号鉴权 + 按用户限流。
 - 请求：`query`、可选 `courseId` / `moduleId`、`topK`。
 - 请求边界：`query` 去首尾空白后 1–500 字符；`topK` 取整并收敛到 1–20（默认 5）；`courseId` ≤64 字符且仅 `[A-Za-z0-9._-]`；`segmentId` 形如 `seg-...` 且 ≤80 字符。Host 在调用云端前统一校验，非法入参不发起请求。
-- 响应边界：单次响应 ≤512KiB；单片段 `text` ≤4000 字符、`title` ≤200 字符；`relatedKnowledgePoints` ≤5 条且仅含 `knowledgePointId/title`；越界或结构不合法整体失败，不静默截断。
+- 响应边界：单次响应 ≤512KiB；单片段 `text` ≤4000 字符、`title` 与展示标题 ≤200 字符；`relatedKnowledgePoints` ≤5 条且仅含 `knowledgePointId/title`；越界或结构不合法整体失败，不静默截断。
 - 响应 `segments[]`：`segmentId, courseId, chapterId, knowledgePointId, title, startSec, endSec, text, score`，以及展示用 `courseTitle, chapterTitle, knowledgePointTitle`（可选，缺失时客户端回退显示 ID）。
 - 响应 `relatedKnowledgePoints[]`：`knowledgePointId, title`，用于「课程未覆盖」时给出最近知识点（F1.4）；只给标题，不得携带起止秒或片段正文，避免被误当引用。
 - 片段详情：`GET /v1/kb/segments/{segmentId}`，返回单片段元数据、展示标题与起止秒，供客户端点击历史回答中的引用时定位；同样要求鉴权与限流。
