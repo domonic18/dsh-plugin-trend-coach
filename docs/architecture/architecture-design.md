@@ -1,9 +1,10 @@
-# 趋势伴学插件 · 架构设计（v1.0）
+# 趋势伴学插件 · 架构设计（v1.1）
 
-- 状态：v1.0，基于 PRD v1.2 与 dsh 0.2.1-rc.5 实测结论
+- 状态：v1.1，基于 PRD v1.3 与 dsh 0.2.1-rc.5 实测/源码调研结论；补齐需求覆盖矩阵与待决策清单
 - 日期：2026-10-31
 - 上游文档：[产品需求文档](../requirements/product-requirements.md)
 - 配套规范：[项目规范](../conventions/project-conventions.md)
+- 版本变更：v1.1 补充播放语义、HLS 播放方案、鉴权分期、水印与水印边界、TTS 方案、指标采集边界、显示字段与相邻知识点契约、`engines.dsh` 强制校验，以及 §17 覆盖矩阵、§18 待决策清单。
 
 ---
 
@@ -62,7 +63,7 @@ flowchart LR
   H -->|HTTPS + Bearer| KB
   H -->|HTTPS + Bearer| SG
   P -->|签名 HLS| V
-  H -.->|M2 后| AC
+  H -.->|M3 设备码| AC
 ```
 
 **职责边界**
@@ -171,7 +172,7 @@ sequenceDiagram
   A-->>S: Markdown 回答
 ```
 
-**要求**：工具描述明确「回答课程内容前必须先调用」；无召回时返回固定文案，模型必须回答「课程未覆盖」。
+**要求**：工具描述明确「回答课程内容前必须先调用」；无召回时返回固定文案，模型必须回答「课程未覆盖」，并只能引用 `relatedKnowledgePoints` 的标题作为相近内容提示，不得补造时间点。
 
 ### 5.2 引用点击 → 播放定位
 
@@ -193,6 +194,17 @@ sequenceDiagram
 ```
 
 **验收口径**：跳转成功率 ≥ 99%，seek 误差 ≤ 2s。服务端必须支持 HTTP Range。
+
+**播放语义**（对齐 PRD F1.3，M2 落地）
+
+| 行为 | 约定 |
+|---|---|
+| 起播位置 | 从 `startSec` seek 并尝试自动播放 |
+| 片段时长 | 播放至 `min(endSec, startSec + 60)` 后自动暂停，避免一次播完整章 |
+| 区间高亮 | 播放器展示 `[startSec, endSec]` 高亮区间与时间戳；超出区间仍可手动拖动 |
+| 重复定位 | 同一 tab 再次引用时依赖 `navigation.revision` 重新 seek，不重建 `<video>` |
+| 自动播放被拒 | 浏览器无用户手势时 `play()` 可能被拒；降级为「已定位、待点击播放」，不循环重试、不报错弹窗 |
+| 上下文 | 播放器只读 tab params，不写全局状态；离开 tab 即丢弃播放状态 |
 
 ### 5.3 右栏主动检索
 
@@ -226,19 +238,30 @@ sequenceDiagram
     "startSec": 0,
     "endSec": 0,
     "text": "string",
-    "score": 0.0
+    "score": 0.0,
+    "courseTitle": "string | undefined",
+    "chapterTitle": "string | undefined",
+    "knowledgePointTitle": "string | undefined"
+  }],
+  "relatedKnowledgePoints": [{
+    "knowledgePointId": "string",
+    "title": "string"
   }]
 }
 ```
 
-**渲染约定**：每个片段附 `https://trend-coach.local/segment/<segmentId>?t=<start>&e=<end>`，并指示模型原样复制、不得自行生成时间点。空结果渲染固定拒答文案。
+- `courseTitle/chapterTitle/knowledgePointTitle` 为展示字段，用于渲染「课程 → 章节 → 知识点」；缺失时客户端回退显示 ID，不阻塞引用。
+- `relatedKnowledgePoints` 在空召回或最高分低于阈值时返回相邻知识点（≤ 5 条），支撑 F1.4「课程未覆盖 → 给最近知识点」；不得包含时间点，避免被误当引用。
+- **当前差距**：M0 实现仅返回基础字段与空数组；上述字段为 M2 契约目标，云端与工具渲染需同步补齐。
+
+**渲染约定**：每个片段附 `https://trend-coach.local/segment/<segmentId>?t=<start>&e=<end>`，并指示模型原样复制、不得自行生成时间点。空结果渲染固定拒答文案，并附 `relatedKnowledgePoints` 标题作为「相近内容」提示（仅标题，不给时间点）。
 
 ### 6.2 Remote 方法
 
 | 方法 | 入参（位置参数） | 结果 |
 |---|---|---|
-| `trendCoach/search` | `query: string, topK: number, signal` | `{query, segments[]}` |
-| `trendCoach/getSegment` | `segmentId: string, signal` | `Segment` |
+| `trendCoach/search` | `query: string, topK: number, signal` | `{query, segments[], relatedKnowledgePoints[]}` |
+| `trendCoach/getSegment` | `segmentId: string, signal` | `Segment`（含展示标题） |
 
 - 客户端调用返回 `{ ok: true, value } | { ok: false, error }`。
 - spec 的 `package` 必须为 `dsh-plugin-trend-coach`；method wire 名为 `服务名/方法名`；result 使用 strict codec。
@@ -257,7 +280,16 @@ Content-Type: application/json
 { "query": "...", "topK": 5, "courseId": "optional" }
 ```
 
-响应 `{ "segments": Segment[] }`；`score` 为 0–1。
+响应：
+
+```jsonc
+{
+  "segments": [/* Segment，含 courseTitle/chapterTitle/knowledgePointTitle */],
+  "relatedKnowledgePoints": [{ "knowledgePointId": "string", "title": "string" }]
+}
+```
+
+`score` 为 0–1；`relatedKnowledgePoints` 可为空数组，仅在 `segments` 为空或低分时填充。云端不得在相邻知识点中携带 `startSec/endSec`。
 
 **片段**
 
@@ -281,6 +313,13 @@ Authorization: Bearer <token>
 | `src` | string | 否（默认由配置/云端签名提供） |
 
 同一 tab 重复打开通过 `navigation.revision` 触发重新定位。
+
+**播放源与解密**
+
+- dsh/Chromium 不内置 HLS 播放能力，加密 HLS 由插件内置的 hls.js 经 MSE 播放（A9）；普通 MP4 仍走原生 `<video>`，两条路径按 `src` 扩展名/MIME 选择。
+- `src` 必须为短时效签名地址，由云端在检索/片段接口中下发或由设备授权换取；客户端不持久化、不写日志。
+- 水印在播放画面上以客户端覆盖层实现（用户 ID + 时间戳，周期性位移），作为威慑与追溯线索；取证级水印另行评估（A11）。
+- 解密失败、签名过期、播放中断均落到播放器内可读提示，不静默黑屏。
 
 **引用 URL**：`https://trend-coach.local/segment/{encodeURIComponent(segmentId)}?t={startSec}&e={endSec}`。客户端只接受该 host 与 `/segment/` 前缀。
 
@@ -307,7 +346,13 @@ Authorization: Bearer <token>
 | A5 | 云端只读 + Top-K | 降低内容外流与越权面 | 离线不可用 |
 | A6 | 学员 BYOK，插件不碰模型 Key | 成本与合规归属清晰 | 低能力模型影响体验 |
 | A7 | 单 npm 包同时含双半 | 安装一次、版本一致 | 构建需分别产出 Host/Client |
-| A8 | 预览期锁定 dsh 精确版本 | API 漂移风险高 | 升级需主动跟进 |
+| A8 | 预览期锁定 dsh 精确版本 | API 漂移风险高；`engines.dsh` 与 DSH peer 依赖由插件管理器强制校验，不满足会阻止安装/激活 | 升级需主动跟进并把 `engines.dsh` 收紧到实测区间 |
+| A9 | 内置 hls.js 播放加密 HLS | dsh 不提供 HLS 播放器，Chromium/Electron 无原生 HLS；MSE 是唯一可行路径 | 增加约 200KB 体积，需按需动态加载并自管错误恢复 |
+| A10 | M2 用 credential-ref 引用内部 token，M3 切设备码换短时 token | 公测前必须有账号体系（D5），但内部试用不应被账号体系阻塞 | M2 凭据轮换依赖配置更新；M3 需重做 Host 鉴权与错误码 |
+| A11 | 水印先做客户端动态覆盖层，取证级水印后置 | 零云端改造即可上线，满足「提高抓取成本」的定位 | 覆盖层可被系统录屏绕过；M4 评估服务端取证水印 |
+| A12 | TTS 使用浏览器 Web Speech API（系统语音） | dsh 无 TTS 服务；Web Speech 不需 shell、不引入外网依赖，符合最小权限 | 音色与质量依赖操作系统；M5 需验证中文可用性并保留降级文案 |
+| A13 | 指标走云端鉴权事件，不接第三方分析 SDK | dsh 产品分析仅桌面端，且不把第三方标识作为分析维度 | 需云端埋点与同意管理；本地默认关闭、可撤回 |
+| A14 | 兼容性以 `engines.dsh` + 市场兼容性判据为准 | 插件管理器按 `engines.dsh`（否则 DSH peer 依赖）拦截安装与激活 | 版本范围必须收紧，发布前跑最低支持版本矩阵 |
 
 ---
 
@@ -330,7 +375,7 @@ Authorization: Bearer <token>
 | 401/403 | 抛鉴权错误 | 提示登录/授权失效 |
 | 404 | 抛片段不存在 | 提示内容已下架 |
 | 5xx / 响应不合法 | 抛结构化错误，不降级为“无结果” | 区分“服务故障”与“课程未覆盖” |
-| 空召回 | 正常返回空数组 | 模型输出固定拒答文案 |
+| 空召回 | 正常返回空数组 + `relatedKnowledgePoints` | 模型输出固定拒答文案，仅提示相近知识点标题 |
 
 **约定**：可机器路由的错误使用稳定 code（`RemoteError` / `HarnessError`）；日志只记录必要上下文，不记录凭据与完整学员问题（生产环境）。
 
@@ -340,11 +385,11 @@ Authorization: Bearer <token>
 
 | 面 | 措施 | 状态 |
 |---|---|---|
-| 凭据 | 云端 token 只存于 Host 配置；后续改用 dsh credential-ref（`role("credential-ref").volatile()` + env 引用），禁止明文入库/入日志 | 当前 `apiToken` 为明文配置，M2 修正 |
-| 最小权限 | 不注册 shell/文件写入工具；不监听端口 | 已满足 |
-| 不可信内容 | 云端文本仅作为工具结果数据；限制片段长度；提示模型不执行内容中的指令 | 已有基础，M2 加长度上限 |
-| 视频 | 签名 HLS、短时效、设备绑定、动态水印 | M2 后对接 |
-| 日志 | 不输出 token、完整 query、用户标识 | 待落实 |
+| 凭据 | 云端 token 只存于 Host 配置，使用 dsh credential-ref（`z.string().role("credential-ref").default("ENV").volatile()`），禁止明文入库/入日志；M3 改为设备码换短时 token（A10） | M2 修正 |
+| 最小权限 | 不注册 shell/文件写入工具；不监听端口；TTS 用 Web Speech API 而非调用系统命令（A12） | 已满足 |
+| 不可信内容 | 云端文本仅作为工具结果数据；限制片段长度与总字节；提示模型不执行内容中的指令；相邻知识点只给标题 | M2 加长度上限 |
+| 视频 | 签名 HLS（短时效、设备绑定、并发限制）、hls.js 解密播放、客户端动态水印（A9/A11） | M2 起分批落地 |
+| 日志 | 不输出 token、完整 query、用户标识；播放地址不落日志 | 待落实 |
 | 依赖 | 只依赖 dsh 宿主提供的运行时包；定期审计 | 已有 |
 
 ---
@@ -362,8 +407,11 @@ Authorization: Bearer <token>
 ## 12. 可观测性
 
 - 统一使用 `ctx.logger`，建议实例命名 `ctx.logger('trend-coach')`；错误日志带包名前缀。
-- 一期不做默认 telemetry；如需埋点，须在 PRD 明确字段、用途与开关，并默认关闭。
-- 关键事件（检索耗时、空召回率、引用点击）先通过日志与本地指标验证，再评估上报方案。
+- 一期不接入第三方分析 SDK：dsh 自带的产品分析仅覆盖桌面端，且不把第三方插件标识作为分析维度（A13）。
+- 指标上报走云端鉴权事件接口，与账号绑定，字段最小化；未登录或不 consent 时不上报。
+- 事件白名单（M2 起）：`search_requested`（耗时、topK、命中数、是否空召回）、`citation_clicked`（segmentId）、`player_started`（起播耗时、是否自动播放被拒）；**不含** query 原文、回答内容、完整播放地址。
+- 本地默认只写日志便于自检；云端开关与同意流程在 M2 随账号体系落地，PRD §8 指标由此聚合。
+- 关键错误按 §9 的错误码分桶，避免把「空召回」与「服务故障」混在同一指标。
 
 ---
 
@@ -413,18 +461,59 @@ docs/                        # 需求、架构、规范
 | 阶段 | 架构增量 | 本文需更新 |
 |---|---|---|
 | M0（已完成） | 双半骨架、工具、Remote、引用/播放器链路、打包验证 | — |
-| M2 | 接通真实云端、鉴权、错误码、面板完善、播放器接 HLS、凭据 credential-ref | §4、§6、§10 |
-| M3 | 账号/设备码、体系页、学习进度、后台接口 | 新增账号与体系页章节 |
-| M4 | 多模态输入、ASR 对接、上下文携带 | 新增输入管线章节 |
-| M5 | 互动课堂、TTS、白板、测验 | 新增课堂运行时章节 |
+| M2 | 接通真实云端、credential-ref 鉴权、错误码、显示字段/相邻知识点契约、面板完善、播放器接 hls.js + 客户端水印、指标事件上报 | §4、§6、§10、§12 |
+| M3 | 设备码换取短时 token、体系页、学习进度、后台接口 | 新增账号与体系页章节 |
+| M4 | 多模态输入、ASR 对接、上下文携带；评估取证级水印 | 新增输入管线章节 |
+| M5 | 互动课堂、Web Speech TTS、白板、测验 | 新增课堂运行时章节 |
 | M6 | 安装包、灰度、兼容矩阵、合规 | 发布与运维章节 |
 
 ---
 
 ## 16. 开放问题
 
-1. 云端鉴权一期用静态 token 还是设备码换取短时 token？影响 Host 凭据模型与错误处理。
-2. 视频 HLS 加密与 dsh `<video>` 的兼容性（是否需要 hls.js、是否允许外置依赖）待验证。
-3. 引用链接的 host（`trend-coach.local`）是否长期保留；若云端提供真实域名，拦截逻辑需同时支持。
-4. 云端片段文本长度上限与提示注入防护策略需在 M2 定稿。
-5. dsh 预览版后续版本若改变 Remote/slot API，升级窗口与回滚策略待定。
+1. M3 设备码的具体流程（轮询还是回调、短时 token 生命周期、刷新机制）待账号后台设计；M2 仅用 credential-ref 内部 token，不阻塞问答链路。
+2. 引用链接的 host（`trend-coach.local`）是否长期保留；若云端提供真实域名，拦截逻辑需同时支持，且不得放宽到任意 host。
+3. 云端片段文本长度上限与提示注入防护策略需在 M2 定稿（建议单片段 ≤ 2KB、总 ≤ 12KB，超限截断并标记）。
+4. dsh 预览版后续版本若改变 Remote/slot API，升级窗口与回滚策略待定；`engines.dsh` 需随兼容矩阵同步收紧。
+5. Web Speech API 在 macOS/Windows 上的中文音色与可用性需在 M5 实机验证；不可用时降级为纯文字讲解。
+6. 客户端水印能否满足版权方要求、是否需要服务端取证水印，需 M4 与法务/版权方确认。
+
+---
+
+## 17. 需求覆盖矩阵
+
+以 PRD v1.3 为准，标注架构承接位置与闭合状态。状态含义：**已闭合**＝设计可落地且有验证；**部分**＝设计明确但存在契约/实现差距；**待设计**＝后续里程碑单独补充。
+
+| 需求 | 优先级 | 架构承接 | 状态 | 闭合前置 |
+|---|---|---|---|---|
+| F1 课程问答与视频溯源 | P0 | §4.1、§5.1、§5.2、§6.1–6.4 | 部分 | 真实云端检索 + 显示字段/相邻知识点契约 + 播放语义落地 |
+| F1.3 自动播放 30–60s、片段高亮、水印 | P0 | §5.2 播放语义、§6.4、A11 | 部分 | hls.js 集成、水印覆盖层、自动播放降级 |
+| F1.4 未覆盖给最近知识点 | P0 | §6.1 `relatedKnowledgePoints` | 部分 | 云端返回相邻知识点（仅标题）并更新工具渲染 |
+| F2 知识体系化呈现 | P0 | §4.3（云端契约视角） | 待设计 | M3 体系页与后台接口章节 |
+| F3 学习场景即时提问（多模态） | P0 | §1 范围外，M4 补充 | 待设计 | 选中文本/页面上下文采集方式、ASR 接入 |
+| F4 AI 互动课堂 | P1 | A12、M5 | 待设计 | 课堂运行时章节、Web Speech 验证 |
+| F5 后台管理 | P0 | 云端职责，M3 | 待设计 | 后台接口与权限契约 |
+| NFR 性能（检索 P95 ≤ 300ms、首屏 ≤ 2s、起播 ≤ 2s） | P0 | §11 | 部分 | 真实环境压测；hls.js 懒加载 |
+| NFR 安全（最小权限、不可信内容、签名播放、水印） | P0 | §10、A11–A13 | 部分 | credential-ref、长度上限、水印、日志脱敏 |
+| NFR 合规（风险提示、AI 合规、隐私） | P0 | §10、PRD §7 | 待设计 | UI 常驻免责声明、注销与同意流程 |
+| 指标（激活/引用点击/满意度等） | P0 | §12、A13 | 部分 | 云端事件接口 + 同意管理 |
+
+**M2 前必须闭合**：F1 全链路契约（含显示字段与相邻知识点）、播放语义与 hls.js、credential-ref、错误码区分、日志脱敏。其余按里程碑排期。
+
+---
+
+## 18. 待决策清单
+
+| 事项 | 当前结论 | 状态 | 决策位置 |
+|---|---|---|---|
+| HLS 播放方案 | 内置 hls.js，按需加载；MP4 走原生 | 已决 | A9 |
+| 鉴权分期 | M2 credential-ref 内部 token；M3 设备码换短时 token | 已决（M3 流程待设计） | A10、§16.1 |
+| 水印实现 | M2 客户端动态覆盖层；取证级后置 | 已决（取证待评估） | A11、§16.6 |
+| TTS 方案 | 浏览器 Web Speech API | 已决（中文可用性待验证） | A12、§16.5 |
+| 指标采集边界 | 云端鉴权事件，字段白名单，同意后可撤回 | 已决 | A13、§12 |
+| 最近知识点接口 | 检索响应扩展 `relatedKnowledgePoints`（仅标题） | 已决（云端待实现） | §6.1、§6.3 |
+| dsh 版本门禁 | 以 `engines.dsh` + peer 精确版本为安装/激活判据 | 已决 | A8、A14、规范 §2 |
+| 引用 host | 保留 `trend-coach.local`，真实域名上线时增量支持 | 待定 | §16.2 |
+| 片段长度/注入防护 | 单片段 ≤ 2KB、总 ≤ 12KB（建议值） | 待定 | §16.3 |
+| 设备码流程 | 轮询/回调、token 生命周期 | 待定 | §16.1 |
+| 服务端取证水印 | 是否引入 | 待定 | §16.6 |
