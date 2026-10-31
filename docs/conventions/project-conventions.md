@@ -1,7 +1,7 @@
-# 趋势伴学插件 · 项目规范（v1.2）
+# 趋势伴学插件 · 项目规范（v1.3）
 
-- 状态：v1.2，依据 dsh 0.2.1-rc.5 官方插件实现、M0 实测结论与插件管理器/市场源码调研；补充播放会话、签名媒体与 HLS 选择顺序
-- 日期：2026-10-31
+- 状态：v1.3，依据 dsh 0.2.1-rc.5 官方插件实现、M0 实测结论与插件管理器/市场源码调研；新增学习上下文（`systemPrompt.section`）、选中文本隐私与 composer slot 注册规范
+- 日期：2026-11-01
 - 适用范围：本仓库全部代码、配置、文档与提交
 - 关联文档：[架构设计](../architecture/architecture-design.md)、[产品需求](../requirements/product-requirements.md)
 
@@ -73,7 +73,8 @@ cordis.patch.yml      bundle patch（随包发布）
 - **必须**：工具、tab 类型、DOM 监听等注册放进 `ctx.effect(() => disposer, label)`，确保卸载可逆；slot 按官方模式 `ctx.slots.inject(name, () => ctx.slots.register(...))` 注册，由注入作用域管理清理。
 - **必须**：静态 `inject` 只声明激活前就保证存在的服务（如 `tools`、`credentials`、`slots`、`sidebarRightTabs`、`sidebarRight`、`remote`）。
 - **必须**：`remote.<namespace>` 不得写入静态 `inject`；先 `ctx.remote.$mount()`，成功后在 `ctx.inject(['remote.<ns>'], scoped => …)` 内使用。
-- **必须**：Host 端依赖 `credentials` 时必须写进静态 `inject`（`['tools', 'credentials']`）。dsh 的激活顺序不保证 `dsh-credentials-local` 先于本插件，`apply` 里直接 `ctx.get('credentials')` 可能为空。
+- **必须**：Host 端依赖 `credentials` 时必须写进静态 `inject`（`['tools', 'credentials', 'systemPrompt']`）。dsh 的激活顺序不保证 `dsh-credentials-local` 先于本插件，`apply` 里直接 `ctx.get('credentials')` 可能为空；`systemPrompt` 由 dsh-base 提供，可安全静态注入。
+- **必须**：随学习场景变化的临时上下文使用 `ctx.systemPrompt.section()`（每次组装求值、不写入聊天历史）；**禁止**使用 `systemPrompt.context()`——它会生成持久 user-role 快照并显示在聊天里。section 使用 `interpolate: false`，文本中禁止未转义的 `{{ }}` 插值。
 - **必须**：动态依赖用 `ctx.inject([...], child => …)`，不要在回调外缓存 `child` 的服务引用。
 - **必须**：配置用 schemastery 定义默认值；敏感配置使用 credential-ref：
   `z.string().role("credential-ref").default("ENV_NAME").volatile()`，不得明文保存。
@@ -124,8 +125,11 @@ cordis.patch.yml      bundle patch（随包发布）
 - **必须**：构建时外置平台基座依赖（react、react-dom、cordis、zod、client-ui-slots、client-ui-primitives、client-ui-dockkit 等），不重复打包。
 - **必须**：`sidebarRightTabs.register()` 的 `guide` 为数组，条目含 `id` / `order` / `title()`；tab body 注册在 keyed slot `sidebar.right.pane.tab`，key 等于 tab 定义的 `id`。
 - **必须**：页面型 tab 通过 `ctx.sidebarRight.openTab(kind, { params })` 打开；参数必须是 `Record<string, unknown>`（对象需展开复制）。
-- **必须**：DOM 级监听（如引用点击）必须绑定在 `scoped.effect` 内，并在清理函数中移除。
+- **必须**：DOM 级监听（如引用点击、全局选中检测）必须绑定在 `scoped.effect` 内，并在清理函数中移除；清理时同时移除悬浮按钮等临时 DOM。
 - **必须**：引用只接受 `segmentId` 代码块与 `https://trend-coach.local/segment/...` 链接；不新增自定义 scheme 依赖。
+- **必须**：`conversation.input.left` 等未声明自定义 `InjectFace` 的 slot 不得通过 `inject` 传自定义 props；用注册闭包包装组件（`props => React.createElement(Bridge, { ...props, remote })`），标准 props（含 `sessionId`）原样透传。
+- **必须**：会话作用域数据（学习场景发布）由 composer slot 内的桥接组件负责；体系页/播放器只写全局 store，不自行猜测 `sessionId`。
+- **应当**：`InputActions` 没有 `focus()`；聚焦输入框只能走 DOM 兜底（优先上次 `focusin` 记录的 `[data-composer-input]`，否则选唯一可见编辑器），失败不报错、不阻断上下文携带。
 - **应当**：组件不直接 fetch 云端；所有数据经 Remote。
 - **应当**：UI 文案用中文；代码标识符用英文；面向学员的错误文案不暴露内部错误码。
 - **建议**：UI 规模扩大后迁移到 CSS Modules + `--dsw-*` token + `@deepseek-ai/dsh-client-ui-primitives`；当前内联样式为阶段性方案。
@@ -165,6 +169,8 @@ cordis.patch.yml      bundle patch（随包发布）
 - **应当**：依赖升级走审计；新增依赖需说明用途与体积影响。
 - **应当**：视频走签名 HLS、短时效、设备绑定与动态水印；不在客户端保存长期播放地址。水印一期用播放器覆盖层（用户 ID + 时间戳），不宣称可阻止录屏。
 - **必须**：TTS 等本地能力优先使用浏览器标准 API（如 Web Speech API），不得调用 `say`/SAPI 等系统命令或注册 shell 工具。
+- **必须**：学习上下文（课程/章节/知识点/播放位置/选中文本）只在本机 Host 内存中处理：不上云、不落盘、不落日志、不进入指标；Host store 需限会话数（≤64）与 TTL（30min），退出登录时清空。
+- **必须**：选中文本按不可信数据处理：原始 ≤4000 字符、清洗控制字符后按码点截断到 500；包裹在固定 `<learner_selected_text>` 边界内并转义伪造边界；在提示中声明不可执行。默认开启、可随时关闭，关闭后渲染为空。
 - **应当**：不接入第三方行为分析/广告 SDK；任何指标采集需先有 PRD 字段定义与用户同意路径。
 
 ---
@@ -236,6 +242,10 @@ cordis.patch.yml      bundle patch（随包发布）
 - ❌ 信任引用 URL 或模型输出中的起止秒（`t/e`），而不调 `getSegment`
 - ❌ 用 shell/系统命令实现 TTS 或其他本地能力
 - ❌ 接入第三方分析 SDK 或未经同意上报行为数据
+- ❌ 用 `systemPrompt.context()` 注入学习场景（会写聊天历史）
+- ❌ 把学习上下文/选中文本上传云端、写入磁盘、日志或指标
+- ❌ 通过 `inject` 向未声明 `InjectFace` 的 slot（如 `conversation.input.left`）传自定义 props
+- ❌ 在体系页/播放器里猜测或伪造 `sessionId` 发布上下文
 
 ---
 
@@ -256,4 +266,7 @@ cordis.patch.yml      bundle patch（随包发布）
 | 客户端产物格式 | `@deepseek-ai/dsh-client-ui-theme` `lib/client.js` |
 | 版本门禁 | `@deepseek-ai/dsh-plugin-manager` `lib/types/tools.js`（engines.dsh / DSH peer 阻止安装与激活）、`@deepseek-ai/dsh-plugin-market`（兼容性判据） |
 | 播放与 TTS 现状 | dsh 客户端包内无 HLS 播放器与 TTS 服务；HLS 需自备 hls.js，TTS 用 Web Speech API |
+| systemPrompt section | `@deepseek-ai/dsh-system-prompt` `lib/types/index.d.ts`（`PromptSection`；`context()` 生成持久快照、`section()` 为临时段） |
+| 会话/agent 上下文 | `@deepseek-ai/dsh-agent` `lib/types/runtime-types.d.ts`（`AssembleContext.agent?: Agent`）、`lib/types/types.d.ts`（`Agent.id: SessionId`） |
+| composer slot | `@deepseek-ai/dsh-client-ui-conversation` `lib/types/client/contract/slots.d.ts`、`contract/input.d.ts`（无自定义 InjectFace；`InputActions` 无 `focus()`；编辑器标记 `data-composer-input`） |
 | 产品分析边界 | `@deepseek-ai/dsh-client-product-analytics` 仅桌面端，第三方插件标识不构成分析维度 |
