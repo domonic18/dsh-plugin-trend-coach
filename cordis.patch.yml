@@ -1,5 +1,4 @@
 - insert:
     - id: trend-coach
       name: dsh-plugin-trend-coach
-      config:
-        baseUrl: http://127.0.0.1:3939
+      config: {}
