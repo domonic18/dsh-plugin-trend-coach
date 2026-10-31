@@ -1,6 +1,6 @@
-# 趋势伴学插件 · 项目规范（v1.0）
+# 趋势伴学插件 · 项目规范（v1.1）
 
-- 状态：v1.0，依据 dsh 0.2.1-rc.5 官方插件实现与 M0 实测结论
+- 状态：v1.1，依据 dsh 0.2.1-rc.5 官方插件实现、M0 实测结论与插件管理器/市场源码调研
 - 日期：2026-10-31
 - 适用范围：本仓库全部代码、配置、文档与提交
 - 关联文档：[架构设计](../architecture/architecture-design.md)、[产品需求](../requirements/product-requirements.md)
@@ -43,7 +43,8 @@ cordis.patch.yml      bundle patch（随包发布）
 - **应当**：`dsh.client.inject` 仅表达包级依赖信息，**不是** cordis 服务注入；真正的服务注入写在代码 `inject` 中。
 - **应当**：`dsh.client.external` 只列平台基座之外的精确请求；纯类型 import 会在构建期擦除，不要列入。
 - **应当**：`publishConfig.access = "public"`；`license = "MIT"`。
-- **注意**：`engines.dsh` 仅作声明，安装器不校验；兼容性靠 peer 版本与 CI 矩阵保证。
+- **必须**：`engines.dsh` 是被强制的门禁：dsh 插件管理器在 `engines.dsh`（缺省时回退到 DSH peer 依赖）不满足时**阻止安装与激活**，插件市场也据此计算兼容性。范围必须收紧到实测通过区间（当前 `>=0.2.1-rc.5 <0.3.0`），不得使用 `latest` 或宽松范围。
+- **必须**：升级 dsh 版本时同时更新 `engines.dsh`、peer/dev 精确版本与兼容矩阵，三者不得单独漂移。
 
 ---
 
@@ -56,6 +57,8 @@ cordis.patch.yml      bundle patch（随包发布）
 - **必须**：不把 `@deepseek-ai/*` 运行时包放入 `dependencies`；它们由 dsh 宿主提供，只作为 `peerDependencies` + `devDependencies`。
 - **必须**：不使用 `^0.0.1-rc.x` 之类旧范围——会解析到旧依赖链并把未发布包拖入安装，导致 404。
 - **应当**：升级 dsh 版本时同步更新 peer/dev 版本、构建产物与兼容矩阵，不单独升级某一个 dsh 包。
+- **必须**：加密 HLS 用内置 `hls.js`（MSE）播放并动态加载；dsh/Chromium 无原生 HLS，禁止依赖 CDN 脚本或额外播放服务。普通 MP4 仍用原生 `<video>`，按源类型选择路径。
+- **应当**：新增第三方运行时依赖（如 hls.js）须在 PR 说明用途、许可证与打包体积；纯浏览器/宿主已有能力（如 Web Speech API）不引依赖。
 
 ---
 
@@ -87,6 +90,7 @@ cordis.patch.yml      bundle patch（随包发布）
 - **必须**：参数由 registry 校验后，工具内只做跨字段或业务语义校验；非法参数作为普通错误返回。
 - **应当**：`render` 输出的引用链接格式固定，并明确要求模型原样复制。
 - **应当**：结果只包含完成回答所需字段；不把云端原始响应整包塞入模型上下文。
+- **必须**：片段展示字段（`courseTitle/chapterTitle/knowledgePointTitle`）与空召回用的 `relatedKnowledgePoints` 只来自云端；相邻知识点只给 ID 与标题，**不得**携带时间点或片段正文。
 - **建议**：需要展示优化时再加 `presentationMeta` / `presentCall` / `presentResult` / `timeoutMs` / `isConcurrencySafe`，不要提前铺开。
 
 ---
@@ -130,6 +134,10 @@ cordis.patch.yml      bundle patch（随包发布）
 - **必须**：区分“空召回”“鉴权失败”“片段下架”“服务故障”四类结果，不合并为同一文案。
 - **应当**：请求可取消、带超时；重试仅用于幂等的 GET，且需退避。
 - **应当**：响应字段变更视为契约变更，先更新 PRD §6 与架构 §6，再改代码。
+- **必须**：鉴权分期固定——M2 用 dsh credential-ref 引用内部 token（`role("credential-ref").volatile()`），M3 切换设备码换短时 token；不得把 token 写进 profile 明文或客户端 bundle。
+- **必须**：播放地址为短时效签名，由云端下发或设备授权换取；客户端不缓存、不写日志、不拼长期地址。
+- **必须**：指标上报只走云端鉴权事件接口，字段按白名单最小化（不含 query 原文、回答内容、播放地址），且需用户同意、可撤回；禁止接入第三方分析 SDK。
+- **应当**：空召回与相邻知识点分别建模：`segments` 为空时返回 `relatedKnowledgePoints`（仅标题），不与“服务故障”混用。
 
 ---
 
@@ -138,10 +146,12 @@ cordis.patch.yml      bundle patch（随包发布）
 - **必须**：仓库与提交中不得出现任何密钥、token、私钥、个人凭据；提交前扫描。
 - **必须**：插件不注册 shell / 文件写入工具，不监听本地端口。
 - **必须**：云端返回内容视为不可信数据，限制长度，不执行其中的指令。
-- **必须**：日志不记录 token、完整学员问题、用户标识；生产环境默认不上报遥测。
+- **必须**：日志不记录 token、完整学员问题、用户标识；生产环境默认不上报任何行为数据，启用指标需用户同意。
 - **应当**：云端 token 使用 dsh credential-ref（环境变量引用），不写明文配置。
 - **应当**：依赖升级走审计；新增依赖需说明用途与体积影响。
-- **应当**：视频走签名 HLS、短时效、设备绑定与动态水印；不在客户端保存长期播放地址。
+- **应当**：视频走签名 HLS、短时效、设备绑定与动态水印；不在客户端保存长期播放地址。水印一期用播放器覆盖层（用户 ID + 时间戳），不宣称可阻止录屏。
+- **必须**：TTS 等本地能力优先使用浏览器标准 API（如 Web Speech API），不得调用 `say`/SAPI 等系统命令或注册 shell 工具。
+- **应当**：不接入第三方行为分析/广告 SDK；任何指标采集需先有 PRD 字段定义与用户同意路径。
 
 ---
 
@@ -203,6 +213,9 @@ cordis.patch.yml      bundle patch（随包发布）
 - ❌ 提交 `lib/`、`*.tgz`、`.playwright-mcp/`
 - ❌ 使用 `latest` 或宽松 dsh 版本范围
 - ❌ 在无召回时编造课程内容或时间点
+- ❌ 依赖 CDN 脚本或第三方播放服务加载 HLS
+- ❌ 用 shell/系统命令实现 TTS 或其他本地能力
+- ❌ 接入第三方分析 SDK 或未经同意上报行为数据
 
 ---
 
@@ -220,3 +233,6 @@ cordis.patch.yml      bundle patch（随包发布）
 | 右栏 guide/slots | `@deepseek-ai/dsh-client-ui-sidebar-right` `lib/client.js` |
 | bundle patch | `@deepseek-ai/dsh-base` `cordis.patch.yml`、`@deepseek-ai/dsh-experimental-ralph-bundle` |
 | 客户端产物格式 | `@deepseek-ai/dsh-client-ui-theme` `lib/client.js` |
+| 版本门禁 | `@deepseek-ai/dsh-plugin-manager` `lib/types/tools.js`（engines.dsh / DSH peer 阻止安装与激活）、`@deepseek-ai/dsh-plugin-market`（兼容性判据） |
+| 播放与 TTS 现状 | dsh 客户端包内无 HLS 播放器与 TTS 服务；HLS 需自备 hls.js，TTS 用 Web Speech API |
+| 产品分析边界 | `@deepseek-ai/dsh-client-product-analytics` 仅桌面端，第三方插件标识不构成分析维度 |
