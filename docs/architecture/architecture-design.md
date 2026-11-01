@@ -1,10 +1,10 @@
-# 趋势伴学插件 · 架构设计（v1.6）
+# 趋势伴学插件 · 架构设计（v1.7）
 
-- 状态：v1.6，基于 PRD v1.6 与 dsh 0.2.1-rc.5 实测/源码调研结论；新增 M4.2 语音提问（composer 麦克风 + 浏览器 WAV 重采样 + 云端 MiniMax ASR）
+- 状态：v1.7，基于 PRD v1.6 与 dsh 0.2.1-rc.5 实测/源码调研结论；新增 M8 阅读层：章节教材懒加载、`![alt](figure:<figureId>)` 图示渲染与短时签名 URL 换取
 - 日期：2026-11-01
-- 上游文档：[产品需求文档](../requirements/product-requirements.md)
+- 上游文档：[产品需求文档](../requirements/product-requirements.md)（M8 阅读层已同步至 v1.7）
 - 配套规范：[项目规范](../conventions/project-conventions.md)
-- 版本变更：v1.6 新增 M4.2 语音提问：`conversation.input.right` 麦克风、浏览器录音与 16kHz 单声道 PCM16 WAV 编码、Remote `transcribeVoice`、云端 `POST /v1/asr/transcribe` 转发 MiniMax、插入 composer 不自动发送、60s 上限与失败降级；v1.5 新增 M4.1 学习场景即时提问（文字/图片 + 自动上下文 + 选中文本）：Remote `setLearnerContext`、Host 内存 store、`systemPrompt.section` 动态注入、composer 桥接与全局选中检测；v1.4 落地退出并注销（`POST /v1/auth/revoke`）、面板跨挂载状态保留、`npm run smoke` 与 CI，并记录 S9 真实云端联调结果；v1.3 落地指标事件同意与上报（`GET/PUT /v1/events/consent` + 三类白名单事件），并记录 S8 真实云端联调结果；v1.2 落地播放会话契约（`POST /v1/playback/sessions`）、媒体 CORS 要求、引用时间点只信 `getSegment`、hls.js 优先于 `canPlayType` 的选择顺序，并记录 S1 端到端验证结果；v1.1 补齐播放语义、HLS 方案、鉴权分期、水印、TTS、指标、显示字段/相邻知识点、`engines.dsh` 与 §17/§18。
+- 版本变更：v1.7 新增 M8 阅读层：课程树 `contractVersion=2` 门禁、章节教材按需拉取、知识点详情移除文章、客户端仅渲染 `figure:` 引用并由 `figures` 映射解析签名 URL；v1.6 新增 M4.2 语音提问：`conversation.input.right` 麦克风、浏览器录音与 16kHz 单声道 PCM16 WAV 编码、Remote `transcribeVoice`、云端 `POST /v1/asr/transcribe` 转发 MiniMax、插入 composer 不自动发送、60s 上限与失败降级；v1.5 新增 M4.1 学习场景即时提问（文字/图片 + 自动上下文 + 选中文本）：Remote `setLearnerContext`、Host 内存 store、`systemPrompt.section` 动态注入、composer 桥接与全局选中检测；v1.4 落地退出并注销（`POST /v1/auth/revoke`）、面板跨挂载状态保留、`npm run smoke` 与 CI，并记录 S9 真实云端联调结果；v1.3 落地指标事件同意与上报（`GET/PUT /v1/events/consent` + 三类白名单事件），并记录 S8 真实云端联调结果；v1.2 落地播放会话契约（`POST /v1/playback/sessions`）、媒体 CORS 要求、引用时间点只信 `getSegment`、hls.js 优先于 `canPlayType` 的选择顺序，并记录 S1 端到端验证结果；v1.1 补齐播放语义、HLS 方案、鉴权分期、水印、TTS、指标、显示字段/相邻知识点、`engines.dsh` 与 §17/§18。
 
 ---
 
@@ -18,6 +18,7 @@
 - 与云端知识库、视频分发、账号体系的接口边界。
 - M2 核心链路：课程问答 → 引用 → 视频定位。
 - M4.1 学习上下文：播放器/体系页场景采集、全局选中文本、composer 桥接、Host 内存 store、`systemPrompt.section` 动态注入。
+- M8 阅读层：按章节拉取教材正文、渲染 `figure:` 图示、`contractVersion` 兼容门禁；知识点仍作为检索、播放与进度锚点。
 
 **不在范围内**
 
@@ -204,6 +205,7 @@ scoped.slots.inject('conversation.input.left', () => scoped.slots.register(
 | 账号 / 设备码 | 待定 | 契约已定，mock + dsh 已验（S2） |
 | 视频签名 HLS | `POST /v1/playback/sessions` | 契约已定，mock + 浏览器已验（S1） |
 | 学习进度 | `GET /v1/catalog/*` + `PUT /v1/progress/knowledge-points/{id}` | 契约已定，云端 + mock 已验证（M3） |
+| 章节教材 / 图示 | `GET /v1/catalog/courses/{courseId}/chapters/{chapterId}` | M8 契约已定；云端 + mock + 插件读路径已实现，生成层与 E2E 待补 |
 | 语音转写 | `POST /v1/asr/transcribe`（转发 MiniMax） | 契约已定，M4.2 实现；真实 MiniMax 待 `ASR_API_KEY` |
 
 ---
@@ -336,6 +338,43 @@ sequenceDiagram
 - 绝不调用 `inputActions.submit()`：转写只产生草稿，发送由学员决定。
 - 组件卸载或会话切换时 `disposeOwner(ownerId)`：停止 recorder、释放 tracks、清 pending。
 - 音频与转写文本只在内存流转；Host 与云端只记录操作名/错误类型，不记录 base64、正文或完整设备 ID。
+
+### 5.6 章节教材阅读与图示（M8）
+
+```mermaid
+sequenceDiagram
+  participant U as 学员
+  participant T as 体系页 tab
+  participant R as Remote trendCoach
+  participant H as Host cloud-client
+  participant C as 云端 catalog
+  participant M as 媒体域
+
+  U->>T: 打开课程
+  T->>R: catalogCourse(courseId)
+  R->>H: GET /v1/catalog/courses/{courseId}
+  H-->>R: 课程树 + contractVersion=2
+  R-->>T: 章节列表（hasArticle/figureCount，不含正文）
+  U->>T: 点击章节
+  T->>R: catalogChapter(courseId, chapterId)
+  R->>H: GET /v1/catalog/courses/{courseId}/chapters/{chapterId}
+  H-->>R: markdown + figures 映射（签名 URL 10 分钟）
+  R-->>T: 校验后的章节教材
+  T->>T: 解析 Markdown，按 figures 映射解析 figure: 引用
+  T->>M: 请求签名图片（img 标签，不携带 Bearer）
+  M-->>T: 图片字节（不携带 Bearer）
+```
+
+**规则**
+
+- 课程树只含结构、进度与 `hasArticle/figureCount`，不内联正文；正文首次打开章节时按需拉取，避免一次下载全部课程。
+- 章节教材按 `chapterId` + `article.version` 缓存在内存；签名 URL 默认 10 分钟有效，缓存超过 8 分钟或图片加载失败时重新请求本章接口（每章最多自动刷新一次，防循环）。
+- 知识点详情不再返回文章；知识点条目只承担播放定位与进度上报。章节标题是阅读入口，知识点是学习与播放锚点。
+- 图示只允许 `![alt](figure:<figureId>)` 形式：客户端**只**用 `figures` 映射解析，禁止把 Markdown 里的任意 URL 直接作为 `img.src`，禁止拼接媒体地址、禁止 base64 内嵌。
+- 图片渲染使用 `<figure><img loading="lazy" decoding="async" referrerPolicy="no-referrer">` 与 `<figcaption>`；`width/height` 用于预留布局，CSS 限 `max-width:100%`。
+- 解析失败、映射缺失或刷新后仍失败时渲染占位（显示 `alt`/说明文字），不破坏正文阅读，不循环重试。
+- `alt`/`caption` 与正文同属不可信内容，只生成 React 文本节点，不使用 `dangerouslySetInnerHTML`。
+- `contractVersion` 缺失按 `1` 处理；插件最低支持 `2`，低于时提示「课程内容版本过旧，请在后台重新生成并发布」，高于插件已知上限时提示升级插件，均不静默降级渲染。
 
 ---
 
@@ -524,19 +563,22 @@ Content-Type: application/json
 |---|---|
 | `segmentId` 全局唯一且稳定 | 跨版本、跨回答可复用；下架后返回 404 |
 | `startSec < endSec`，整数秒 | 映射粒度为秒 |
-| `courseId/chapterId/knowledgePointId` 稳定 | 转写、文章、视频片段共用同一知识点 ID |
+| `courseId/chapterId/knowledgePointId` 稳定 | 转写、章节教材、视频片段共用同一套 ID |
 | `score ∈ [0, 1]` | 仅用于排序与展示，不作为可信度承诺 |
-| 不下发全库正文 | 只返回 Top-K 片段与元数据 |
+| 不下发全库正文 | 只返回 Top-K 片段与元数据；章节教材按章拉取 |
+| `figure:<figureId>` 稳定 | 正文只存稳定引用；签名 URL 随章节接口下发，不入库、不进缓存键 |
+| 引用可解析 | 已发布章节中每个 `figure:` 必在 `figures` 命中；Host 校验不通过即报错 |
 
-### 6.6 M3 体系页与学习进度（客户端、云端与 mock 已实现；后台内容管理待 M3.2）
+### 6.6 M3 体系页、M8 章节教材与学习进度
 
-**Remote 方法（新增）**
+**Remote 方法**
 
 | 方法 | 入参（位置参数） | 结果 |
 |---|---|---|
 | `trendCoach/catalogCourses` | `signal` | `{courses: CatalogCourseSummary[]}` |
-| `trendCoach/catalogCourse` | `courseId: string, signal` | `{courseId, title, chapters[]}`（知识点含进度） |
-| `trendCoach/knowledgePoint` | `knowledgePointId: string, signal` | `{knowledgePointId, courseId, chapterId, title, article?, segmentId?, adjacentKnowledgePoints[]}` |
+| `trendCoach/catalogCourse` | `courseId: string, signal` | `{contractVersion, courseId, title, chapters[]}`（章节含 `hasArticle/figureCount`，知识点含进度） |
+| `trendCoach/catalogChapter` | `courseId: string, chapterId: string, signal` | `CatalogChapterArticle`（正文 + `figures` + `adjacentChapters`，M8 新增） |
+| `trendCoach/knowledgePoint` | `knowledgePointId: string, signal` | `{knowledgePointId, courseId, chapterId, title, segmentId?, adjacentKnowledgePoints[]}`（M8 起不再含 `article`） |
 | `trendCoach/reportProgress` | `knowledgePointId: string, watchedSec: number, completed: boolean, signal` | `{knowledgePointId, watchedSec, completed, updatedAt}` |
 
 **云端 HTTP（Bearer + `x-device-id`）**
@@ -544,8 +586,48 @@ Content-Type: application/json
 ```http
 GET /v1/catalog/courses
 GET /v1/catalog/courses/{courseId}
+GET /v1/catalog/courses/{courseId}/chapters/{chapterId}   # M8 新增
 GET /v1/catalog/knowledge-points/{knowledgePointId}
 PUT /v1/progress/knowledge-points/{knowledgePointId}
+```
+
+**共享类型（`src/shared/contracts.ts`）**
+
+```ts
+interface CatalogCourse {
+  contractVersion: number            // 缺失视为 1；插件最低支持 2
+  courseId: string
+  title: string
+  chapters: CatalogChapter[]
+}
+
+interface CatalogChapter {
+  chapterId: string
+  title: string
+  position: number
+  hasArticle: boolean
+  figureCount: number                // 0–3
+  knowledgePoints: CatalogKnowledgePoint[]
+}
+
+interface CatalogChapterArticle {
+  chapterId: string
+  courseId: string
+  title: string
+  article: ChapterArticle | null     // null：生成失败或未发布
+  figures: Record<string, ChapterFigure>
+  adjacentChapters: { chapterId: string; title: string }[]
+}
+
+interface ChapterArticle { markdown: string; version: number; publishedAt: number }
+
+interface ChapterFigure {
+  url: string                        // 短时签名，默认 10 分钟
+  width: number
+  height: number
+  alt: string
+  caption?: string
+}
 ```
 
 课程列表：
@@ -562,16 +644,19 @@ PUT /v1/progress/knowledge-points/{knowledgePointId}
 }
 ```
 
-课程树：
+课程树（不内联正文）：
 
 ```jsonc
 {
+  "contractVersion": 2,
   "courseId": "string",
   "title": "string",
   "chapters": [{
     "chapterId": "string",
     "title": "string",
     "position": 0,
+    "hasArticle": true,
+    "figureCount": 2,
     "knowledgePoints": [{
       "knowledgePointId": "string",
       "title": "string",
@@ -584,7 +669,32 @@ PUT /v1/progress/knowledge-points/{knowledgePointId}
 }
 ```
 
-知识点详情：
+章节教材：
+
+```jsonc
+{
+  "chapterId": "string",
+  "courseId": "string",
+  "title": "string",
+  "article": {
+    "markdown": "# 章标题\n\n...\n\n![均线交叉示意](figure:fig_ab12cd34_f1)\n",
+    "version": 1,
+    "publishedAt": 1760000000000
+  },
+  "figures": {
+    "fig_ab12cd34_f1": {
+      "url": "https://media.example.com/figures/fig_ab12cd34_f1/cand_1.jpg?expires=1760000600&sig=...",
+      "width": 1600,
+      "height": 900,
+      "alt": "均线交叉示意",
+      "caption": "均线交叉示意"
+    }
+  },
+  "adjacentChapters": [{ "chapterId": "string", "title": "string" }]
+}
+```
+
+知识点详情（不再返回文章）：
 
 ```jsonc
 {
@@ -592,7 +702,6 @@ PUT /v1/progress/knowledge-points/{knowledgePointId}
   "courseId": "string",
   "chapterId": "string",
   "title": "string",
-  "article": { "markdown": "string", "version": 1, "publishedAt": 1760000000000 },
   "segmentId": "seg-...",
   "adjacentKnowledgePoints": [{ "knowledgePointId": "string", "title": "string" }]
 }
@@ -604,12 +713,26 @@ PUT /v1/progress/knowledge-points/{knowledgePointId}
 { "watchedSec": 120, "completed": false }
 ```
 
-- 只返回 `published` 课程、章节、知识点与文章；未发布或不存在返回 `404`。
-- 课程列表 ≤50；单课程 ≤50 章节、总知识点 ≤1000；标题 ≤200 字符；单次响应 ≤512KiB。
+**契约门禁与懒加载**
+
+- `contractVersion` 缺失按 `1` 处理。插件 `MIN_CATALOG_CONTRACT_VERSION=2`：低于最低版本提示「课程内容版本过旧，请在后台重新生成并发布」；高于插件 `MAX_CATALOG_CONTRACT_VERSION=2` 提示升级插件。两种情况都不请求章节正文、不降级到旧的知识点文章。
+- 课程树只含结构与计数，正文与签名 URL 在打开章节时才请求；同一 `chapterId` 仅保留最近一章，离开体系页即丢弃，不缓存全课程正文。
+- 客户端缓存键为 `courseId + chapterId + article.version`，有效期 8 分钟（小于签名 10 分钟）。超过有效期或图片加载失败时重拉本章一次；仍失败则显示占位，不循环重试。
+- 章节标题是阅读入口；知识点条目保留播放定位与进度上报。知识点详情不再包含文章，因此点击知识点只展示标题、关联视频按钮与相邻知识点。
+- `article === null` 显示「本章教材暂未发布」，知识点与播放能力保持可用。
+
+**Markdown 子集与图示渲染**
+
+- 在现有块级解析上新增独立成行的图片块 `![alt](figure:<figureId>)`；`alt` 只作纯文本，图片块不参与行内加粗/链接解析。
+- 只接受 `figure:` scheme，且 `figureId` 必须命中响应中的 `figures`。其他图片写法（外链、`data:`、相对路径）一律降级为普通文本/占位，不发起网络请求，避免正文诱导第三方请求。
+- 渲染为 `<figure><img loading="lazy" decoding="async" referrerPolicy="no-referrer" src={figures[id].url} width height alt><figcaption>caption ?? alt</figcaption></figure>`；尺寸只用于预留布局，样式限制 `max-width:100%; height:auto`。
+- `markdown`、`alt`、`caption` 均按不可信内容处理：只生成 React 文本节点，不使用 `dangerouslySetInnerHTML`，不执行 HTML/脚本，URL 不由正文提供。
+- Host 边界校验：`markdown` ≤20000 字符；`figures` ≤3 项；`url` 仅 http/https（非 local 环境要求 https）；`width/height` 为 1–10000 的整数；`alt` ≤200 字符、`caption` ≤200 字符；正文中每个 `figure:` 引用都必须能在 `figures` 命中，否则整体报错，不静默丢图。
+- 课程列表 ≤50；单课程 ≤50 章节、总知识点 ≤1000；标题 ≤200 字符；单次响应 ≤512KiB；图片本身由媒体域直出，不进 Remote 响应。
+- 只返回 `published` 课程、章节、教材与已选图示；未发布或不存在返回 `404`。
 - 课程树不携带 `startSec/endSec`；播放定位仍以 `getSegment` 的权威起止秒为准。`segmentId` 可缺省，表示该知识点暂无可用片段。
-- `article` 可为 `null`；`markdown` ≤20000 字符，只允许 Markdown 子集，不执行 HTML/脚本。文章与标题按不可信内容处理，Host 校验长度；客户端使用内置 Markdown 子集渲染器，只生成 React 元素，不使用 `dangerouslySetInnerHTML`，不加载外部资源。
 - `watchedSec` 为整数秒，范围 0–86400；云端按 `max(旧值, 新值)` 保存，`completed` 一旦为 `true` 不可回退；接口幂等，重复上报返回同一结果。
-- `adjacentKnowledgePoints` ≤5 条且仅含 ID 与标题，不携带时间点。
+- `adjacentKnowledgePoints` / `adjacentChapters` 各 ≤5 条且仅含 ID 与标题，不携带时间点。
 - 进度属于业务写入，不走 `POST /v1/events`，不受指标同意开关影响；只允许当前授权设备读写本人进度，设备不匹配 `403`，超限 `429`。
 - 后台管理接口不属于插件契约，学员令牌不可访问。体系页到片段跳转 ≤3 次点击；播放器在 30s、暂停、结束与片段播完时上报，失败只记 debug 日志，不阻塞播放。
 
@@ -766,6 +889,7 @@ Content-Type: application/json
 - **UI 状态**：面板查询状态为组件本地状态；播放器位置来自 tab params。M4.1 新增全局学习场景 store（课程/知识点/播放位置/选中文本），由体系页与播放器写入、composer 桥接读取。跨会话历史由 dsh 管理。
 - **学习上下文**：Host store 随插件卸载释放；条目 30 分钟 TTL、≤64 会话；退出登录清空；`enabled` 持久化在客户端 `localStorage`。
 - **语音（M4.2）**：录音状态为模块级单例；学员显式取消、组件卸载或会话切换都会停止 recorder、释放 `MediaStream` tracks 并清 pending（取消不发起转写请求）；页面卸载时浏览器自动停麦；Host 不缓存音频，转写结果直接返回后丢弃。
+- **章节教材（M8）**：正文与签名 URL 只在客户端内存；按 `courseId + chapterId + article.version` 缓存 8 分钟，切章或离开体系页即丢弃；不落盘、不进全局学习场景 store。
 - **重复导航**：`revision` 自增即为“重新定位”信号，组件 effect 依赖 `revision`。
 
 ---
@@ -781,6 +905,9 @@ Content-Type: application/json
 | 429 | 上游 429 映射「请求过于频繁」 | 提示稍后重试 |
 | 5xx / 响应不合法或过大 | 结构化错误，不降级为“无结果” | 区分“服务故障”与“课程未覆盖” |
 | 空召回 | 正常返回空数组 + `relatedKnowledgePoints` | 模型输出固定拒答文案，仅提示相近知识点标题 |
+| 目录契约版本不支持 | `catalogCourse` 校验 `contractVersion`：低于 2 报「内容版本过旧」，高于 2 报「请升级插件」 | 体系页显示可读提示，不请求或渲染章节正文 |
+| 章节教材非法 | `markdown`/`figures` 超限、URL 非 http(s) 或 `figure:` 引用缺失 → 结构化错误，不部分渲染 | 显示「本章教材加载失败，请稍后重试」，知识点播放不受影响 |
+| 图示加载失败 | 客户端重拉本章一次换取新签名 URL | 仍失败显示 `alt`/占位与说明，不循环重试、不阻塞正文 |
 | 学习上下文非法 | `sessionId`/ID/标题/位置/选中文本越界或跨字段缺失 → `InputError` → `gateway/bad-request` | 客户端只显示中文文案；不重试 |
 | 过期 revision | 返回 `{applied:false}`，不覆盖新快照 | 客户端不回滚、不重试 |
 | 选中文本超长 | 原始 >4000 字符报错；≤4000 则截断到 500 并置 `truncated` | UI 正常显示 chip，无报错 |
@@ -806,6 +933,7 @@ Content-Type: application/json
 | 日志 | 不输出 token、完整 query、用户标识；播放地址不落日志 | S4 已验证：Host 只记操作名与错误类型；mock 掩码 userCode/deviceId、不记 query 原文 |
 | 学习上下文 | 仅本机 Host 内存；不上云、不落盘、不落日志、不进指标；选中文本限长并按不可信内容隔离（固定边界 + 转义 + `interpolate:false`）；可关闭 | M4.1 已实现；S10 已验证场景发布、位置桶、选中文本、开关（真实模型出文与图片提问待模型环境） |
 | 语音 | 音频与转写只在内存（浏览器→Host→云端→MiniMax）；不落盘、不落日志、不进指标；Host 与云端双重 WAV 校验；按设备限流、请求体上限 3MiB、单次 ≤60s；转写只插入草稿、不自动发送 | M4.2 实现；mock/fake provider 覆盖；真实 MiniMax 待 `ASR_API_KEY` |
+| 章节图示 | 正文只存 `figure:` 稳定引用；签名 URL 由章节接口短时下发（默认 10 分钟），浏览器直连媒体域、不携带 Bearer；只加载 `figures` 映射中的 http(s) URL，正文外链一律不请求；图片请求带 `referrerPolicy="no-referrer"`；dsh-web-app 0.2.1-rc.5 文档响应未设置 CSP（仅令牌跳转带 `Referrer-Policy: no-referrer`），外部图片域当前可用，升级 dsh 时需复验 | S12 已验证（mock + 真实浏览器） |
 | 依赖 | 只依赖 dsh 宿主提供的运行时包；定期审计 | 已有 |
 
 ---
@@ -819,6 +947,7 @@ Content-Type: application/json
 - 云端不可用时，问答明确报错，不伪造引用。
 - 学习上下文段放在系统提示末尾（order 8500），播放位置按 15s 桶更新，降低提示前缀缓存抖动；实测成本偏高时可将桶调到 30–60s。
 - 语音：单次 ≤60s，16kHz 单声道 PCM16 WAV ≤1.92MB（base64 ≤2.56MB）；插件 `voiceTimeoutMs` 40s 大于云端 `ASR_TIMEOUT_MS` 30s，让云端先返回可读错误；录音状态单例避免重复占用麦克风。
+- 章节教材：课程树不内联正文，首次打开章节才请求（单章 ≤20000 字符）；图片 `loading="lazy"`、带宽高预留布局，媒体域直连并复用浏览器缓存；签名 10 分钟有效，客户端 8 分钟主动换新，避免阅读中断。
 
 ---
 
@@ -834,6 +963,7 @@ Content-Type: application/json
 - 关键错误按 §9 的错误码分桶，避免把「空召回」与「服务故障」混在同一指标。
 - 学习上下文完全不进入指标：`setLearnerContext` 只在 debug 日志记录操作名与是否截断，**不记录 sessionId、选中文本、标题或播放位置**。
 - 语音完全不进入指标：`transcribeVoice` 只记操作名、耗时与错误类型，**不记录 base64、转写正文、音频时长明细或完整 deviceId**；云端 ASR 日志同样只记错误类别。
+- 章节教材加载失败只记 `chapterId` 与错误类型，**不记录正文、`alt/caption` 或图片签名 URL**（避免签名参数落日志）。
 
 ---
 
@@ -848,7 +978,7 @@ src/
 ├── host/
 │   ├── config.ts            # 配置 schema、环境/日志校验、baseUrl 规范化
 │   ├── log.ts               # 按 logLevel 过滤日志
-│   ├── cloud-client.ts      # 云端请求与响应结构校验
+│   ├── cloud-client.ts      # 云端请求、目录契约版本与章节教材/图示响应校验
 │   ├── events.ts            # 指标事件上报与同意状态缓存
 │   ├── tool.ts              # trend_coach_search 工具与渲染
 │   ├── learner-context.ts   # 学习上下文 store、渲染与 systemPrompt.section 注册
@@ -858,7 +988,8 @@ src/
 │   └── contracts.ts         # Host/Client 共用领域类型与上限
 └── client/
     ├── index.ts             # Client：Remote spec、面板、播放器、引用拦截
-    ├── catalog.ts           # 体系页：课程树、文章、进度
+    ├── catalog.ts           # 体系页：课程树、章节教材、图示与进度
+    ├── chapter-article.ts   # 纯函数：figure 引用解析、映射解析、缓存/刷新判定（M8）
     ├── context-model.ts     # 纯函数：位置桶、时间格式、截断、快照
     ├── learner-context.ts   # 客户端全局学习上下文 store
     ├── context-bridge.ts    # conversation.input.left 桥接与会话发布
@@ -905,6 +1036,8 @@ docs/                        # 需求、架构、规范
 
 **M4.2 增补（2026-11-01）**：`test/voice-audio.test.mjs` 覆盖合法 WAV 与错误 magic/立体声/44.1k/8bit/data 长度/时长不符/非法 base64/超长；`test/voice-client.test.mjs` 断言 WAV 头字段、样本字节与 base64 分块；`test/voice-remote.test.mjs` 断言请求体、状态码映射（413/422/429/502/503）与文本清洗；`test/voice-controller.test.mjs` 覆盖录音中与授权等待中取消（释放 tracks、不发起转写）；mock 新增 `/v1/asr/transcribe` 并纳入契约测试。浏览器内录放、插入与取消见 S11。
 
+**M8 增补（2026-11-01）**：`test/catalog-contract.test.mjs` 覆盖 `contractVersion` 缺失/1/2/3、章节正文长度、`figures` 上限、`figure:` 引用缺失、URL scheme 与图示尺寸；`test/chapter-article.test.mjs` 覆盖图片块解析、映射命中/缺失、URL 安全与 8 分钟缓存判定；mock catalog 新增章节接口并返回带过期时间的签名 URL；浏览器手工验证章节按需加载、图示渲染、单次失败刷新与占位降级。
+
 **发布前检查**：版本号、peer 精确版本、`files` 清单、无凭据、`npm run smoke`（临时 DSH_HOME 新 profile 安装并启用插件）、PRD/架构/规范同步。
 
 ---
@@ -920,6 +1053,7 @@ docs/                        # 需求、架构、规范
 | M4.2 | 语音输入与云端 MiniMax ASR 对接：composer 麦克风、浏览器 WAV 重采样、Remote `transcribeVoice`、云端 `/v1/asr/transcribe`、插入待确认、60s 上限 | §4、§5.5、§6.2/§6.8、§8–§13、§17 |
 | M5 | 互动课堂、Web Speech TTS、白板、测验 | 新增课堂运行时章节 |
 | M6 | 安装包、灰度、兼容矩阵、合规 | 发布与运维章节 |
+| M8（云端里程碑对齐） | 阅读层：章节教材懒加载、`contractVersion=2` 门禁、`figure:` 图示渲染与签名 URL 刷新、知识点详情去文章 | §1、§4.3、§5.6、§6.5–§6.6、§9–§10、§13–§17 |
 
 ---
 
@@ -936,6 +1070,8 @@ docs/                        # 需求、架构、规范
 9. 真实 MiniMax ASR 需 `ASR_API_KEY`；当前不可用，先以 mock/fake provider 验证，真实链路作为 M4.2 待验项。
 10. dsh 桌面端对 `getUserMedia`/`MediaRecorder` 的权限与支持需实机确认；不支持时按钮降级提示，不阻断文字提问。
 11. 2.56MB base64 走 Remote 的稳定性需 E2E 实测；失败时先降 8kHz/30s，再评估分片。
+12. 插件 PRD v1.7 已同步 M8 章节教材与图示；后续云端契约再变更时，先改 PRD 与本文 §6.6，再改代码。
+13. dsh-web-app 0.2.1-rc.5 实测文档响应无 CSP（`dsh-host-webserver` / `dsh-host-frontend-static` / `dsh-web-frontend` 均无 `img-src`/`default-src`，也无 CSP meta 标签），仅令牌跳转响应带 `Referrer-Policy: no-referrer`；浏览器可直连媒体域（S12 复核）。升级 dsh 后需复验，若后续收紧 `img-src`，改为 Host 代理图片字节（不走 base64），并同时确认 `connect-src`。
 
 ---
 
@@ -948,7 +1084,7 @@ docs/                        # 需求、架构、规范
 | F1 课程问答与视频溯源 | P0 | §4.1、§5.1、§5.2、§6.1–6.4 | 已闭合 | mock 展示字段（S5）+ 真实云端检索/播放/引用定位联调（S7） |
 | F1.3 自动播放 30–60s、片段高亮、水印 | P0 | §5.2 播放语义、§6.4、A11 | 已闭合 | mock（S1+S3）+ 真实云端签名 HLS 解密播放（S7） |
 | F1.4 未覆盖给最近知识点 | P0 | §6.1 `relatedKnowledgePoints` | 已闭合 | mock 展示（S3）+ 真实云端低置信过滤与空召回相邻知识点（S7）；阈值仍需 M1 评估集校准 |
-| F2 知识体系化呈现 | P0 | §4.3、§6.6 | 部分 | 体系页、文章阅读与学习进度已实现；后台内容管理待 M3.2 |
+| F2 知识体系化呈现 | P0 | §4.3、§5.6、§6.6 | 部分 | 体系页、章节教材阅读、图示与学习进度读路径已实现；云端生成层、浏览器 E2E 与后台内容管理待 M3.2 |
 | F3.1 文字/图片提问 + 自动上下文 + 选中文本 | P0 | §4.2、§5.4、§6.7、A17 | 部分 | 场景发布、位置桶、选中文本与开关已实现并通过 S10（mock）；真实模型出文与图片提问待模型环境验证；图片识别效果取决于学员模型视觉能力 |
 | F3.2 语音提问 | P0 | §4.2、§5.5、§6.2、§6.8、A18 | 部分 | 录音、取消、WAV 编码、Remote、mock ASR 转写与插入/降级已通过 S11；真实 MiniMax（需 `ASR_API_KEY`）、真实系统麦克风权限与双 composer 互斥待验 |
 | F4 AI 互动课堂 | P1 | A12、M5 | 待设计 | 课堂运行时章节、Web Speech 验证 |
@@ -980,6 +1116,8 @@ docs/                        # 需求、架构、规范
 
 **S11 验证记录（2026-11-01，插件 mock 3941 + dsh 0.2.1-rc.5 + Playwright/Chrome）**：composer 右侧出现麦克风；点击后先显示「授权麦克风…」，取得麦克风后显示计时；停止后经 Host WAV/时长校验与 `POST /v1/asr/transcribe` 返回固定转写「趋势反转的初步信号有哪些？」，插入输入框且未自动发送（发送按钮仅变为可用）。自动化环境会挂起真实权限弹窗，故用合成 MediaStream 代替系统麦克风，录音 → MediaRecorder → decodeAudioData → 16k 重采样 → PCM16 WAV → Remote → mock ASR → 插入全链路为真实执行；60s 上限通过推进时钟触发自动停止并插入。录音中修改草稿使插入锚点失效时，界面出现「插入转写」与清除按钮，点击后按新光标位置插入。拒绝麦克风权限显示「麦克风权限被拒绝，请在浏览器设置中允许后重试」；`getUserMedia` 缺失显示「当前环境不支持录音」；退出登录后录音显示「尚未登录，请先在趋势伴学面板完成设备授权」。mock 日志仅含掩码设备与时长（`asr device=90*** durationMs=7260`），dsh 日志无 base64、转写正文或完整 deviceId。测试中发现并修复：权限弹窗未决时 UI 误报「录音中」，停止后永久停在「转写中…」；现新增 `starting` 阶段，按钮显示「授权麦克风…」并禁用。补充验证：录音中显示「取消」，点击后界面回到「语音输入」、`MediaStream` track 为 `ended`，mock 未收到 ASR 请求；授权等待中取消也会释放随后到达的流；停止录音仍正常进入转写（未登录返回「尚未登录，请先在趋势伴学面板完成设备授权」并回到空闲）。未覆盖：真实系统麦克风权限弹窗（需桌面端手工确认）、双 composer 分栏互斥（当前布局仅一个 composer，互斥由模块级单例实现）、真实 MiniMax 链路（需 `ASR_API_KEY`）。
 
+**S12 验证记录（2026-11-01，插件 mock 3941 + dsh 0.2.1-rc.5 + Playwright/Chrome；云端真实管线由 `pipeline-e2e` 覆盖）**：设备授权后课程树显示「3 章 · 6 个知识点」，章节行显示「有教材 · 1 张图示」；打开第二章后正文按 Markdown 子集渲染，`![均线多头排列示意](figure:fig_demo_m2)` 渲染为 `<img>`，`naturalWidth=1600 / naturalHeight=900`、`referrerPolicy="no-referrer"`，图片请求不带 `Referer` 与 `Authorization`，控制台无 CSP 拦截或资源错误。模拟签名失效（首次图片请求返回 403）后，客户端触发一次章节重拉（`POST /api/trendCoach/catalogChapter`），用新 URL（带 `renewed` 标记）重新渲染并成功加载，未出现「图示暂不可用」，也未循环重试。dsh 文档响应无 CSP 头与 CSP meta；仅令牌跳转响应带 `Referrer-Policy: no-referrer`；Host 日志无签名 URL、token 与图片字节，mock 日志仅掩码 userCode/deviceId。云端侧由 `pipeline-e2e` 覆盖：未发布时课程树 404、发布前 `figure_unresolved` 409、图示生成/选择/删除占用 409、预算用满后 `image_budget_exceeded` 409、签名篡改/过期 403、重拉章节换取的新签名可直接加载、发布后学员可读教材与图示。未覆盖：真实 Ark 出图与真实云端管理端浏览器操作（需图片模型 Key）。
+
 **M2 前必须闭合**：真实云端检索返回展示字段与播放语义已闭合（S7）。设备码授权、错误码映射与日志脱敏（S2/S4）、展示字段与回退（S5）、提示注入防护与常驻免责声明（S6）、低置信回退（S7）、事件同意与上报（S8）、429 提示与注销（S9）已闭合。剩余：检索阈值按 M1 评估集校准。
 
 ---
@@ -1006,3 +1144,7 @@ docs/                        # 需求、架构、规范
 | ASR 供应商 | 云端 MiniMax（`asr-1.0`），保留 provider 接口 | 已决（真实链路待 `ASR_API_KEY`） | A18、§6.8 |
 | 语音入口 | `conversation.input.right` + 自有录音按钮，不依赖 dsh 语音包 | 已决 | A18、§4.2 |
 | 语音是否自动发送 | 不自动发送；插入 composer 待学员确认，锚点失效降级为手动插入 | 已决 | §5.5、§6.8 |
+| 阅读层粒度 | 章节教材（1500–3000 字）；知识点只做检索、播放与进度锚点 | 已决 | §5.6、§6.6 |
+| 图示引用方式 | 正文只存 `figure:<id>`；章节接口下发短时签名 URL，客户端只按 `figures` 映射解析 | 已决 | §5.6、§6.6 |
+| 外部图片加载 | 直连媒体域（dsh-web-app 0.2.1-rc.5 无 CSP）；升级 dsh 后复验，若收紧改 Host 代理 | 已决（待升级复验） | §10、§16.13 |
+| 目录契约门禁 | `contractVersion` 最低 2；低于提示内容版本过旧，高于提示升级插件，不静默降级 | 已决 | §6.6 |

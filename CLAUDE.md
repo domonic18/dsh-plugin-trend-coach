@@ -21,6 +21,7 @@
 7. 加密 HLS：dsh 无原生 HLS，用内置 hls.js + MSE 动态加载；普通 MP4 走原生 `<video>`。播放地址由 Host 调 `POST /v1/playback/sessions` 换签名 `playlistUrl`，浏览器不持 Bearer；`Hls.isSupported()` 优先，禁止仅凭 `canPlayType`（Chrome on macOS 会误报 `maybe`）跳过 hls.js。
 8. 鉴权与数据：设备码授权为主（`device/code` → 轮询 `device/token` → `refresh` 轮换），S2 已验证；grant 存 dsh credentials 的 grant 记录，刷新用 `modifyRecord` 合并并发；credential-ref 仅作内部 token 回退。token 不进浏览器/日志/配置。指标只走云端鉴权事件白名单，不接第三方分析 SDK。
 9. Host 静态 `inject = ['tools', 'credentials']`：dsh 激活顺序不保证 `dsh-credentials-local` 先就绪，`credentials` 必须与 `tools` 一起声明。
+10. M8 阅读层：课程树 `contractVersion` 最低 2；正文只渲染 `figure:<figureId>`，图片 URL 仅取章节响应 `figures` 映射中的 http(s) 地址，禁止加载正文外链、拼接媒体地址或 base64 内嵌；签名 URL 不进日志。
 
 ## 常用命令
 
@@ -45,7 +46,7 @@ npx --yes @deepseek-ai/dsh@0.2.1-rc.5 --profile <name> --port <port> --no-open
 - `src/index.ts`：Host 入口（`name` / `inject` / `Config` / `apply` 装配）
 - `src/host/config.ts`：配置 schema、环境/日志校验与 `baseUrl` 规范化
 - `src/host/log.ts`：按 `logLevel` 过滤 Host 日志
-- `src/host/cloud-client.ts`：云端请求与响应结构校验
+- `src/host/cloud-client.ts`：云端请求与响应结构校验（含目录 `contractVersion`、章节教材与图示）
 - `src/host/tool.ts`：`trend_coach_search` 工具与渲染
 - `src/host/service.ts`：TrendCoach Remote 服务
 - `src/shared/contracts.ts`：Host/Client 共用领域类型与长度上限
@@ -53,7 +54,8 @@ npx --yes @deepseek-ai/dsh@0.2.1-rc.5 --profile <name> --port <port> --no-open
 - `src/errors.ts`：Host 边界（入参/响应校验、错误映射、限长 JSON 读取）
 - `src/untrusted.ts`：Host 不可信文本处理（固定边界包裹、控制字符剥离、边界伪造转义）
 - `src/client/index.ts`：Browser 半（Remote spec、问答面板含设备登录、播放器、引用拦截）
-- `src/client/catalog.ts`：体系页（课程树、知识点文章、Markdown 子集渲染、进度展示）
+- `src/client/catalog.ts`：体系页（课程树、章节教材懒加载、`figure:` 图示渲染、进度展示）
+- `src/client/chapter-article.ts`：纯函数（图示块解析、`figures` 映射解析、8 分钟缓存判定、URL 安全）
 - `scripts/build-client.mjs`：Client bundle 构建与 `__ModuleLoader__` 包装
 - `test/`：Host 边界、配置、不可信文本、mock 云端契约与发布包断言（`npm test`）
 - `cordis.patch.yml`：bundle patch（config 走 schema 默认值/环境变量）
@@ -64,7 +66,7 @@ npx --yes @deepseek-ai/dsh@0.2.1-rc.5 --profile <name> --port <port> --no-open
 - 工具/Remote/云端接口的字段变化：先更新 PRD §6 与架构 §6，再改代码。
 - 新增注册一律放进 `ctx.effect(...)` 并返回清理函数。
 - 云端响应在 Host 边界校验；非法数据报错，不静默丢弃。
-- 云端标题/正文在工具输出中一律经 `untrusted.ts`（固定边界 + 转义 + 控制字符剥离），工具描述与渲染需声明内容不可信；体系页文章走客户端 Markdown 子集渲染（只生成 React 文本节点，不执行 HTML）；面板与播放器常驻免责声明。
+- 云端标题/正文在工具输出中一律经 `untrusted.ts`（固定边界 + 转义 + 控制字符剥离），工具描述与渲染需声明内容不可信；体系页章节教材走客户端 Markdown 子集渲染（只生成 React 文本节点，不执行 HTML），图示只用章节响应的 `figures` 映射解析签名 URL，正文外链一律不请求；面板与播放器常驻免责声明。
 - 入参/响应边界：query 1–500 字符、topK 1–20、courseId/segmentId 白名单；响应 ≤512KiB、单片段文本 ≤4000 字符、标题与展示标题 ≤200 字符。错误统一映射 `RemoteError`（bad-request/cancelled/internal），日志不落 token、query 原文、设备 ID。
 - 注释只写“为什么”；不写多段注释。
 - 依赖：dsh 包与宿主精确同版本；不加无用运行时依赖。
