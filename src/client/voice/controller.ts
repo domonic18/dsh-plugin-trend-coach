@@ -170,6 +170,16 @@ async function toggle(
   }
 }
 
+function cancel(ownerId: string): void {
+  const current = session
+  if (current === undefined || current.ownerId !== ownerId) return
+  session = undefined
+  stopTicker()
+  current.recorder?.cancel()
+  void current.starting.then((recorder) => recorder.cancel()).catch(() => undefined)
+  setState(IDLE)
+}
+
 function insertPending(ownerId: string, actions: ComposerInputActions): void {
   const pending = state.pending
   if (pending === undefined || pending.ownerId !== ownerId) return
@@ -198,13 +208,8 @@ function dismissPending(ownerId: string): void {
 }
 
 function disposeOwner(ownerId: string): void {
-  const current = session
-  if (current !== undefined && current.ownerId === ownerId) {
-    session = undefined
-    stopTicker()
-    current.recorder?.cancel()
-    void current.starting.then((recorder) => recorder.cancel()).catch(() => undefined)
-    setState(IDLE)
+  if (session?.ownerId === ownerId) {
+    cancel(ownerId)
     return
   }
   if (state.pending?.ownerId === ownerId) {
@@ -227,6 +232,7 @@ export const voiceController = {
     return state
   },
   toggle,
+  cancel,
   insertPending,
   dismissPending,
   disposeOwner,

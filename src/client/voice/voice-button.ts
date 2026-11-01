@@ -148,6 +148,17 @@ export function VoiceButton({ ownerId, inputActions, remote }: VoiceButtonProps)
     }, recordingMine ? null : MicIcon(), label),
   ]
 
+  if (startingMine || recordingMine) {
+    children.push(React.createElement('button', {
+      key: 'cancel',
+      type: 'button',
+      title: '取消录音，不发送转写',
+      'aria-label': '取消录音',
+      onClick: () => voiceController.cancel(ownerId),
+      style: { ...baseStyle, height: 24, padding: '0 6px', border: 0, color: '#888' },
+    }, '取消'))
+  }
+
   if (pending !== undefined) {
     children.push(React.createElement('button', {
       key: 'dismiss',
