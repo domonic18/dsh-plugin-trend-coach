@@ -176,8 +176,8 @@ apply(ctx)
 | `composer-focus.ts` | 从 `selection.ts` 抽出的 `isVisible` + `focusComposer()`；语音插入后复用 |
 | `voice/audio.ts` | 纯函数：`encodeWav`（RIFF/WAVE、PCM16LE、clamp）与分块 `bytesToBase64` |
 | `voice/recorder.ts` | `getUserMedia` + `MediaRecorder`；停止后 `decodeAudioData` → `OfflineAudioContext(1, n, 16000)` → WAV → base64；`cancel()` 只释放麦克风 |
-| `voice/controller.ts` | 模块级单例 store：`idle/starting/recording/processing`（`starting` 表示权限弹窗未决）、录音计时、60s 自动停止、插入/降级 pending、`disposeOwner` |
-| `voice/voice-button.ts` | `conversation.input.right` occupant：麦克风、录音计时、处理中、错误提示、pending「插入转写」 |
+| `voice/controller.ts` | 模块级单例 store：`idle/starting/recording/processing`（`starting` 表示权限弹窗未决）、录音计时、60s 自动停止、`cancel(ownerId)` 取消并释放、插入/降级 pending、`disposeOwner` |
+| `voice/voice-button.ts` | `conversation.input.right` occupant：麦克风、录音计时、取消、处理中、错误提示、pending「插入转写」 |
 
 **composer slot 注册方式**：`conversation.input.left` 未声明自定义 `InjectFace`，不能通过 `inject` 传 props。使用注册闭包包装组件，标准 props 原样透传：
 
@@ -331,6 +331,7 @@ sequenceDiagram
 **规则**
 
 - 录音状态是模块级单例：任一 composer 处于授权/录音/处理阶段时，其它麦克风按钮禁用，避免多路 `getUserMedia` 抢设备；权限弹窗未决时按钮显示「授权麦克风…」，不冒充「录音中」。
+- 授权等待中或录音中可显式取消：`cancel(ownerId)` 停止 recorder、释放 tracks、清空会话并回到空闲，不发起转写请求。
 - `captureInsertion()` 在开始录音时取锚点；转写成功时用该锚点插入。若期间草稿被修改导致插入失败，保留 pending 文本并显示「插入转写」，由学员点击时用新锚点重试。
 - 绝不调用 `inputActions.submit()`：转写只产生草稿，发送由学员决定。
 - 组件卸载或会话切换时 `disposeOwner(ownerId)`：停止 recorder、释放 tracks、清 pending。
@@ -764,7 +765,7 @@ Content-Type: application/json
 - **Remote**：`$mount` 返回 unmount；插件卸载时先释放动态 inject 作用域，再 unmount。
 - **UI 状态**：面板查询状态为组件本地状态；播放器位置来自 tab params。M4.1 新增全局学习场景 store（课程/知识点/播放位置/选中文本），由体系页与播放器写入、composer 桥接读取。跨会话历史由 dsh 管理。
 - **学习上下文**：Host store 随插件卸载释放；条目 30 分钟 TTL、≤64 会话；退出登录清空；`enabled` 持久化在客户端 `localStorage`。
-- **语音（M4.2）**：录音状态为模块级单例；组件卸载或会话切换调用 `disposeOwner` 停止 recorder、释放 `MediaStream` tracks 并清 pending；页面卸载时浏览器自动停麦；Host 不缓存音频，转写结果直接返回后丢弃。
+- **语音（M4.2）**：录音状态为模块级单例；学员显式取消、组件卸载或会话切换都会停止 recorder、释放 `MediaStream` tracks 并清 pending（取消不发起转写请求）；页面卸载时浏览器自动停麦；Host 不缓存音频，转写结果直接返回后丢弃。
 - **重复导航**：`revision` 自增即为“重新定位”信号，组件 effect 依赖 `revision`。
 
 ---
@@ -902,7 +903,7 @@ docs/                        # 需求、架构、规范
 
 **契约测试（2026-10-31）**：`npm test` 启动独立端口的 mock，覆盖设备码授权/轮换/设备绑定、检索与空召回、非法入参、片段详情、播放会话与签名 HLS、Range、401 过期；同时断言 Host 入参/响应边界、错误映射、不可信文本处理与发布包清单。浏览器内的 Remote 挂载、引用点击与播放定位仍按第 4–6 项手工冒烟。
 
-**M4.2 增补（2026-11-01）**：`test/voice-audio.test.mjs` 覆盖合法 WAV 与错误 magic/立体声/44.1k/8bit/data 长度/时长不符/非法 base64/超长；`test/voice-client.test.mjs` 断言 WAV 头字段、样本字节与 base64 分块；`test/voice-remote.test.mjs` 断言请求体、状态码映射（413/422/429/502/503）与文本清洗；mock 新增 `/v1/asr/transcribe` 并纳入契约测试。浏览器内录放与插入为手工冒烟（需麦克风权限）。
+**M4.2 增补（2026-11-01）**：`test/voice-audio.test.mjs` 覆盖合法 WAV 与错误 magic/立体声/44.1k/8bit/data 长度/时长不符/非法 base64/超长；`test/voice-client.test.mjs` 断言 WAV 头字段、样本字节与 base64 分块；`test/voice-remote.test.mjs` 断言请求体、状态码映射（413/422/429/502/503）与文本清洗；`test/voice-controller.test.mjs` 覆盖录音中与授权等待中取消（释放 tracks、不发起转写）；mock 新增 `/v1/asr/transcribe` 并纳入契约测试。浏览器内录放、插入与取消见 S11。
 
 **发布前检查**：版本号、peer 精确版本、`files` 清单、无凭据、`npm run smoke`（临时 DSH_HOME 新 profile 安装并启用插件）、PRD/架构/规范同步。
 
@@ -949,7 +950,7 @@ docs/                        # 需求、架构、规范
 | F1.4 未覆盖给最近知识点 | P0 | §6.1 `relatedKnowledgePoints` | 已闭合 | mock 展示（S3）+ 真实云端低置信过滤与空召回相邻知识点（S7）；阈值仍需 M1 评估集校准 |
 | F2 知识体系化呈现 | P0 | §4.3、§6.6 | 部分 | 体系页、文章阅读与学习进度已实现；后台内容管理待 M3.2 |
 | F3.1 文字/图片提问 + 自动上下文 + 选中文本 | P0 | §4.2、§5.4、§6.7、A17 | 部分 | 场景发布、位置桶、选中文本与开关已实现并通过 S10（mock）；真实模型出文与图片提问待模型环境验证；图片识别效果取决于学员模型视觉能力 |
-| F3.2 语音提问 | P0 | §4.2、§5.5、§6.2、§6.8、A18 | 部分 | 录音、WAV 编码、Remote、mock ASR 转写与插入/降级已通过 S11；真实 MiniMax（需 `ASR_API_KEY`）、真实系统麦克风权限与双 composer 互斥待验 |
+| F3.2 语音提问 | P0 | §4.2、§5.5、§6.2、§6.8、A18 | 部分 | 录音、取消、WAV 编码、Remote、mock ASR 转写与插入/降级已通过 S11；真实 MiniMax（需 `ASR_API_KEY`）、真实系统麦克风权限与双 composer 互斥待验 |
 | F4 AI 互动课堂 | P1 | A12、M5 | 待设计 | 课堂运行时章节、Web Speech 验证 |
 | F5 后台管理 | P0 | 云端职责，M3 | 部分 | 账号与后台登录、React 内容控制台待 M3.1/M3.2 验收 |
 | NFR 性能（检索 P95 ≤ 300ms、首屏 ≤ 2s、起播 ≤ 2s） | P0 | §11 | 部分 | 真实环境压测；hls.js 懒加载 |
@@ -977,7 +978,7 @@ docs/                        # 需求、架构、规范
 
 **S10 验证记录（2026-11-01，插件 mock 3941 + dsh 0.2.1-rc.5 + Chrome/Playwright）**：体系页打开课程与知识点后，composer 发布完整快照（`courseId/courseTitle/chapterId/chapterTitle/knowledgePointId/knowledgePointTitle`），Host ack `applied:true`；播放器打开片段后按 15s 桶发布 `positionSec`（1875→1890），切回课程结构后发布课程级场景（无位置），后台播放 20s 内未覆盖阅读场景；在文章选中文本出现悬浮「提问」，点击后输入框聚焦、chip 显示「已引用选中文本×」，发布含 `selectedText` 的快照，点 × 后清除并重新发布；开关关闭时发布 `enabled:false` 且不再显示悬浮按钮，重新开启恢复；在 composer 内选中文字不触发悬浮按钮。Host 渲染模板、边界转义、TTL/LRU、截断与 revision 淘汰由 `test/learner-context.test.mjs`、`test/context-model.test.mjs`、`test/untrusted.test.mjs` 覆盖。真实模型出文（system prompt 实际生效）与图片提问未在本次浏览器验证，因未配置模型/API Key；图片流程仅依赖 dsh 原生附件与视觉能力，插件侧无二进制管线。
 
-**S11 验证记录（2026-11-01，插件 mock 3941 + dsh 0.2.1-rc.5 + Playwright/Chrome）**：composer 右侧出现麦克风；点击后先显示「授权麦克风…」，取得麦克风后显示计时；停止后经 Host WAV/时长校验与 `POST /v1/asr/transcribe` 返回固定转写「趋势反转的初步信号有哪些？」，插入输入框且未自动发送（发送按钮仅变为可用）。自动化环境会挂起真实权限弹窗，故用合成 MediaStream 代替系统麦克风，录音 → MediaRecorder → decodeAudioData → 16k 重采样 → PCM16 WAV → Remote → mock ASR → 插入全链路为真实执行；60s 上限通过推进时钟触发自动停止并插入。录音中修改草稿使插入锚点失效时，界面出现「插入转写」与清除按钮，点击后按新光标位置插入。拒绝麦克风权限显示「麦克风权限被拒绝，请在浏览器设置中允许后重试」；`getUserMedia` 缺失显示「当前环境不支持录音」；退出登录后录音显示「尚未登录，请先在趋势伴学面板完成设备授权」。mock 日志仅含掩码设备与时长（`asr device=90*** durationMs=7260`），dsh 日志无 base64、转写正文或完整 deviceId。测试中发现并修复：权限弹窗未决时 UI 误报「录音中」，停止后永久停在「转写中…」；现新增 `starting` 阶段，按钮显示「授权麦克风…」并禁用。未覆盖：真实系统麦克风权限弹窗（需桌面端手工确认）、双 composer 分栏互斥（当前布局仅一个 composer，互斥由模块级单例实现）、录音中主动取消（仅面板卸载路径）、真实 MiniMax 链路（需 `ASR_API_KEY`）。
+**S11 验证记录（2026-11-01，插件 mock 3941 + dsh 0.2.1-rc.5 + Playwright/Chrome）**：composer 右侧出现麦克风；点击后先显示「授权麦克风…」，取得麦克风后显示计时；停止后经 Host WAV/时长校验与 `POST /v1/asr/transcribe` 返回固定转写「趋势反转的初步信号有哪些？」，插入输入框且未自动发送（发送按钮仅变为可用）。自动化环境会挂起真实权限弹窗，故用合成 MediaStream 代替系统麦克风，录音 → MediaRecorder → decodeAudioData → 16k 重采样 → PCM16 WAV → Remote → mock ASR → 插入全链路为真实执行；60s 上限通过推进时钟触发自动停止并插入。录音中修改草稿使插入锚点失效时，界面出现「插入转写」与清除按钮，点击后按新光标位置插入。拒绝麦克风权限显示「麦克风权限被拒绝，请在浏览器设置中允许后重试」；`getUserMedia` 缺失显示「当前环境不支持录音」；退出登录后录音显示「尚未登录，请先在趋势伴学面板完成设备授权」。mock 日志仅含掩码设备与时长（`asr device=90*** durationMs=7260`），dsh 日志无 base64、转写正文或完整 deviceId。测试中发现并修复：权限弹窗未决时 UI 误报「录音中」，停止后永久停在「转写中…」；现新增 `starting` 阶段，按钮显示「授权麦克风…」并禁用。补充验证：录音中显示「取消」，点击后界面回到「语音输入」、`MediaStream` track 为 `ended`，mock 未收到 ASR 请求；授权等待中取消也会释放随后到达的流；停止录音仍正常进入转写（未登录返回「尚未登录，请先在趋势伴学面板完成设备授权」并回到空闲）。未覆盖：真实系统麦克风权限弹窗（需桌面端手工确认）、双 composer 分栏互斥（当前布局仅一个 composer，互斥由模块级单例实现）、真实 MiniMax 链路（需 `ASR_API_KEY`）。
 
 **M2 前必须闭合**：真实云端检索返回展示字段与播放语义已闭合（S7）。设备码授权、错误码映射与日志脱敏（S2/S4）、展示字段与回退（S5）、提示注入防护与常驻免责声明（S6）、低置信回退（S7）、事件同意与上报（S8）、429 提示与注销（S9）已闭合。剩余：检索阈值按 M1 评估集校准。
 
