@@ -205,8 +205,8 @@ scoped.slots.inject('conversation.input.left', () => scoped.slots.register(
 | 账号 / 设备码 | 待定 | 契约已定，mock + dsh 已验（S2） |
 | 视频签名 HLS | `POST /v1/playback/sessions` | 契约已定，mock + 浏览器已验（S1） |
 | 学习进度 | `GET /v1/catalog/*` + `PUT /v1/progress/knowledge-points/{id}` | 契约已定，云端 + mock 已验证（M3） |
-| 章节教材 / 图示 | `GET /v1/catalog/courses/{courseId}/chapters/{chapterId}` | M8 契约已定；云端 + mock + 插件读路径已实现，生成层与 E2E 待补 |
-| 语音转写 | `POST /v1/asr/transcribe`（转发 MiniMax） | 契约已定，M4.2 实现；真实 MiniMax 待 `ASR_API_KEY` |
+| 章节教材 / 图示 | `GET /v1/catalog/courses/{courseId}/chapters/{chapterId}` | M8 契约已定；云端生成层、mock、插件读路径与 S12 浏览器验证已完成；真实 Ark 出图待图片模型 Key |
+| 语音转写 | `POST /v1/asr/transcribe`（转发 MiniMax） | 契约已定，M4.2 实现；云端真实 MiniMax 上游已验证（2026-11-01） |
 
 ---
 
@@ -932,7 +932,7 @@ Content-Type: application/json
 | 视频 | 签名 HLS（短时效、设备绑定、并发限制）、hls.js 解密播放、客户端动态水印（A9/A11） | M2 起分批落地 |
 | 日志 | 不输出 token、完整 query、用户标识；播放地址不落日志 | S4 已验证：Host 只记操作名与错误类型；mock 掩码 userCode/deviceId、不记 query 原文 |
 | 学习上下文 | 仅本机 Host 内存；不上云、不落盘、不落日志、不进指标；选中文本限长并按不可信内容隔离（固定边界 + 转义 + `interpolate:false`）；可关闭 | M4.1 已实现；S10 已验证场景发布、位置桶、选中文本、开关（真实模型出文与图片提问待模型环境） |
-| 语音 | 音频与转写只在内存（浏览器→Host→云端→MiniMax）；不落盘、不落日志、不进指标；Host 与云端双重 WAV 校验；按设备限流、请求体上限 3MiB、单次 ≤60s；转写只插入草稿、不自动发送 | M4.2 实现；mock/fake provider 覆盖；真实 MiniMax 待 `ASR_API_KEY` |
+| 语音 | 音频与转写只在内存（浏览器→Host→云端→MiniMax）；不落盘、不落日志、不进指标；Host 与云端双重 WAV 校验；按设备限流、请求体上限 3MiB、单次 ≤60s；转写只插入草稿、不自动发送 | M4.2 实现；mock/fake provider 覆盖；云端真实 MiniMax 上游已验证，插件侧真实云端转写待复测 |
 | 章节图示 | 正文只存 `figure:` 稳定引用；签名 URL 由章节接口短时下发（默认 10 分钟），浏览器直连媒体域、不携带 Bearer；只加载 `figures` 映射中的 http(s) URL，正文外链一律不请求；图片请求带 `referrerPolicy="no-referrer"`；dsh-web-app 0.2.1-rc.5 文档响应未设置 CSP（仅令牌跳转带 `Referrer-Policy: no-referrer`），外部图片域当前可用，升级 dsh 时需复验 | S12 已验证（mock + 真实浏览器） |
 | 依赖 | 只依赖 dsh 宿主提供的运行时包；定期审计 | 已有 |
 
@@ -1067,7 +1067,7 @@ docs/                        # 需求、架构、规范
 6. 客户端水印能否满足版权方要求、是否需要服务端取证水印，需 M4 与法务/版权方确认。
 7. 学习上下文的播放位置桶（15s）对提示前缀缓存的影响需在真实模型下实测；成本偏高时调整为 30–60s。
 8. 多会话/pane 同时存在时共享同一份全局 UI 场景；是否需要会话级隔离待定，当前按全局场景实现并记录。
-9. 真实 MiniMax ASR 需 `ASR_API_KEY`；当前不可用，先以 mock/fake provider 验证，真实链路作为 M4.2 待验项。
+9. 云端真实 MiniMax ASR 已于 2026-11-01 完成上游链路验收（33 分钟中文样片）；插件侧尚未对真实云端转写做 E2E 复测，自动化仍以 mock/fake provider 覆盖。
 10. dsh 桌面端对 `getUserMedia`/`MediaRecorder` 的权限与支持需实机确认；不支持时按钮降级提示，不阻断文字提问。
 11. 2.56MB base64 走 Remote 的稳定性需 E2E 实测；失败时先降 8kHz/30s，再评估分片。
 12. 插件 PRD v1.7 已同步 M8 章节教材与图示；后续云端契约再变更时，先改 PRD 与本文 §6.6，再改代码。
@@ -1084,11 +1084,11 @@ docs/                        # 需求、架构、规范
 | F1 课程问答与视频溯源 | P0 | §4.1、§5.1、§5.2、§6.1–6.4 | 已闭合 | mock 展示字段（S5）+ 真实云端检索/播放/引用定位联调（S7） |
 | F1.3 自动播放 30–60s、片段高亮、水印 | P0 | §5.2 播放语义、§6.4、A11 | 已闭合 | mock（S1+S3）+ 真实云端签名 HLS 解密播放（S7） |
 | F1.4 未覆盖给最近知识点 | P0 | §6.1 `relatedKnowledgePoints` | 已闭合 | mock 展示（S3）+ 真实云端低置信过滤与空召回相邻知识点（S7）；阈值仍需 M1 评估集校准 |
-| F2 知识体系化呈现 | P0 | §4.3、§5.6、§6.6 | 部分 | 体系页、章节教材阅读、图示与学习进度读路径已实现；云端生成层、浏览器 E2E 与后台内容管理待 M3.2 |
+| F2 知识体系化呈现 | P0 | §4.3、§5.6、§6.6 | 已闭合 | 体系页、章节教材、图示与学习进度、云端生成层与后台内容管理均已完成；mock + 云端 `pipeline-e2e` + 真实浏览器 S12 已验证；真实 Ark 出图待图片模型 Key |
 | F3.1 文字/图片提问 + 自动上下文 + 选中文本 | P0 | §4.2、§5.4、§6.7、A17 | 部分 | 场景发布、位置桶、选中文本与开关已实现并通过 S10（mock）；真实模型出文与图片提问待模型环境验证；图片识别效果取决于学员模型视觉能力 |
-| F3.2 语音提问 | P0 | §4.2、§5.5、§6.2、§6.8、A18 | 部分 | 录音、取消、WAV 编码、Remote、mock ASR 转写与插入/降级已通过 S11；真实 MiniMax（需 `ASR_API_KEY`）、真实系统麦克风权限与双 composer 互斥待验 |
+| F3.2 语音提问 | P0 | §4.2、§5.5、§6.2、§6.8、A18 | 部分 | 录音、取消、WAV 编码、Remote、mock ASR 转写与插入/降级已通过 S11；真实系统麦克风权限、双 composer 互斥与插件侧真实云端转写复测待验（云端 MiniMax 上游已验收） |
 | F4 AI 互动课堂 | P1 | A12、M5 | 待设计 | 课堂运行时章节、Web Speech 验证 |
-| F5 后台管理 | P0 | 云端职责，M3 | 部分 | 账号与后台登录、React 内容控制台待 M3.1/M3.2 验收 |
+| F5 后台管理 | P0 | 云端职责，M3 | 部分 | M3.1/M3.2 已落地（账号、邀请码、内容控制台、教材/图示/单价管理）；真实浏览器操作与媒体上传、召回看板、插件灰度未覆盖 |
 | NFR 性能（检索 P95 ≤ 300ms、首屏 ≤ 2s、起播 ≤ 2s） | P0 | §11 | 部分 | 真实环境压测；hls.js 懒加载 |
 | NFR 安全（最小权限、不可信内容、签名播放、水印） | P0 | §10、A10、A11–A13、A16 | 部分 | 设备码/凭据、水印、输入/响应上限、日志脱敏、提示注入防护（S1–S7）、真实云端 429 提示（S9）已验证；真实环境压测待 M6 |
 | NFR 合规（风险提示、AI 合规、隐私） | P0 | §10、PRD §7 | 部分 | 面板与播放器常驻免责声明（S6）、指标同意与撤回（S8）、退出并注销与服务端吊销（S9）已验证；账号级删除随 M3 |
@@ -1114,7 +1114,7 @@ docs/                        # 需求、架构、规范
 
 **S10 验证记录（2026-11-01，插件 mock 3941 + dsh 0.2.1-rc.5 + Chrome/Playwright）**：体系页打开课程与知识点后，composer 发布完整快照（`courseId/courseTitle/chapterId/chapterTitle/knowledgePointId/knowledgePointTitle`），Host ack `applied:true`；播放器打开片段后按 15s 桶发布 `positionSec`（1875→1890），切回课程结构后发布课程级场景（无位置），后台播放 20s 内未覆盖阅读场景；在文章选中文本出现悬浮「提问」，点击后输入框聚焦、chip 显示「已引用选中文本×」，发布含 `selectedText` 的快照，点 × 后清除并重新发布；开关关闭时发布 `enabled:false` 且不再显示悬浮按钮，重新开启恢复；在 composer 内选中文字不触发悬浮按钮。Host 渲染模板、边界转义、TTL/LRU、截断与 revision 淘汰由 `test/learner-context.test.mjs`、`test/context-model.test.mjs`、`test/untrusted.test.mjs` 覆盖。真实模型出文（system prompt 实际生效）与图片提问未在本次浏览器验证，因未配置模型/API Key；图片流程仅依赖 dsh 原生附件与视觉能力，插件侧无二进制管线。
 
-**S11 验证记录（2026-11-01，插件 mock 3941 + dsh 0.2.1-rc.5 + Playwright/Chrome）**：composer 右侧出现麦克风；点击后先显示「授权麦克风…」，取得麦克风后显示计时；停止后经 Host WAV/时长校验与 `POST /v1/asr/transcribe` 返回固定转写「趋势反转的初步信号有哪些？」，插入输入框且未自动发送（发送按钮仅变为可用）。自动化环境会挂起真实权限弹窗，故用合成 MediaStream 代替系统麦克风，录音 → MediaRecorder → decodeAudioData → 16k 重采样 → PCM16 WAV → Remote → mock ASR → 插入全链路为真实执行；60s 上限通过推进时钟触发自动停止并插入。录音中修改草稿使插入锚点失效时，界面出现「插入转写」与清除按钮，点击后按新光标位置插入。拒绝麦克风权限显示「麦克风权限被拒绝，请在浏览器设置中允许后重试」；`getUserMedia` 缺失显示「当前环境不支持录音」；退出登录后录音显示「尚未登录，请先在趋势伴学面板完成设备授权」。mock 日志仅含掩码设备与时长（`asr device=90*** durationMs=7260`），dsh 日志无 base64、转写正文或完整 deviceId。测试中发现并修复：权限弹窗未决时 UI 误报「录音中」，停止后永久停在「转写中…」；现新增 `starting` 阶段，按钮显示「授权麦克风…」并禁用。补充验证：录音中显示「取消」，点击后界面回到「语音输入」、`MediaStream` track 为 `ended`，mock 未收到 ASR 请求；授权等待中取消也会释放随后到达的流；停止录音仍正常进入转写（未登录返回「尚未登录，请先在趋势伴学面板完成设备授权」并回到空闲）。未覆盖：真实系统麦克风权限弹窗（需桌面端手工确认）、双 composer 分栏互斥（当前布局仅一个 composer，互斥由模块级单例实现）、真实 MiniMax 链路（需 `ASR_API_KEY`）。
+**S11 验证记录（2026-11-01，插件 mock 3941 + dsh 0.2.1-rc.5 + Playwright/Chrome）**：composer 右侧出现麦克风；点击后先显示「授权麦克风…」，取得麦克风后显示计时；停止后经 Host WAV/时长校验与 `POST /v1/asr/transcribe` 返回固定转写「趋势反转的初步信号有哪些？」，插入输入框且未自动发送（发送按钮仅变为可用）。自动化环境会挂起真实权限弹窗，故用合成 MediaStream 代替系统麦克风，录音 → MediaRecorder → decodeAudioData → 16k 重采样 → PCM16 WAV → Remote → mock ASR → 插入全链路为真实执行；60s 上限通过推进时钟触发自动停止并插入。录音中修改草稿使插入锚点失效时，界面出现「插入转写」与清除按钮，点击后按新光标位置插入。拒绝麦克风权限显示「麦克风权限被拒绝，请在浏览器设置中允许后重试」；`getUserMedia` 缺失显示「当前环境不支持录音」；退出登录后录音显示「尚未登录，请先在趋势伴学面板完成设备授权」。mock 日志仅含掩码设备与时长（`asr device=90*** durationMs=7260`），dsh 日志无 base64、转写正文或完整 deviceId。测试中发现并修复：权限弹窗未决时 UI 误报「录音中」，停止后永久停在「转写中…」；现新增 `starting` 阶段，按钮显示「授权麦克风…」并禁用。补充验证：录音中显示「取消」，点击后界面回到「语音输入」、`MediaStream` track 为 `ended`，mock 未收到 ASR 请求；授权等待中取消也会释放随后到达的流；停止录音仍正常进入转写（未登录返回「尚未登录，请先在趋势伴学面板完成设备授权」并回到空闲）。未覆盖：真实系统麦克风权限弹窗（需桌面端手工确认）、双 composer 分栏互斥（当前布局仅一个 composer，互斥由模块级单例实现）、插件侧对真实云端转写的 E2E 复测（云端 MiniMax 上游已于 2026-11-01 验收）。
 
 **S12 验证记录（2026-11-01，插件 mock 3941 + dsh 0.2.1-rc.5 + Playwright/Chrome；云端真实管线由 `pipeline-e2e` 覆盖）**：设备授权后课程树显示「3 章 · 6 个知识点」，章节行显示「有教材 · 1 张图示」；打开第二章后正文按 Markdown 子集渲染，`![均线多头排列示意](figure:fig_demo_m2)` 渲染为 `<img>`，`naturalWidth=1600 / naturalHeight=900`、`referrerPolicy="no-referrer"`，图片请求不带 `Referer` 与 `Authorization`，控制台无 CSP 拦截或资源错误。模拟签名失效（首次图片请求返回 403）后，客户端触发一次章节重拉（`POST /api/trendCoach/catalogChapter`），用新 URL（带 `renewed` 标记）重新渲染并成功加载，未出现「图示暂不可用」，也未循环重试。dsh 文档响应无 CSP 头与 CSP meta；仅令牌跳转响应带 `Referrer-Policy: no-referrer`；Host 日志无签名 URL、token 与图片字节，mock 日志仅掩码 userCode/deviceId。云端侧由 `pipeline-e2e` 覆盖：未发布时课程树 404、发布前 `figure_unresolved` 409、图示生成/选择/删除占用 409、预算用满后 `image_budget_exceeded` 409、签名篡改/过期 403、重拉章节换取的新签名可直接加载、发布后学员可读教材与图示。未覆盖：真实 Ark 出图与真实云端管理端浏览器操作（需图片模型 Key）。
 
@@ -1141,7 +1141,7 @@ docs/                        # 需求、架构、规范
 | 学习上下文注入 | `systemPrompt.section()` 临时段，禁用 `context()` | 已决 | A17、§6.7 |
 | 位置更新粒度 | 15s 桶，实测成本偏高时调大到 30–60s | 已决（待实测） | §11、§16.7 |
 | 多会话场景归属 | 全局 UI 场景，不做会话隔离 | 已决（待评估） | §5.4、§16.8 |
-| ASR 供应商 | 云端 MiniMax（`asr-1.0`），保留 provider 接口 | 已决（真实链路待 `ASR_API_KEY`） | A18、§6.8 |
+| ASR 供应商 | 云端 MiniMax（`asr-1.0`），保留 provider 接口 | 已决（云端真实链路已验收） | A18、§6.8 |
 | 语音入口 | `conversation.input.right` + 自有录音按钮，不依赖 dsh 语音包 | 已决 | A18、§4.2 |
 | 语音是否自动发送 | 不自动发送；插入 composer 待学员确认，锚点失效降级为手动插入 | 已决 | §5.5、§6.8 |
 | 阅读层粒度 | 章节教材（1500–3000 字）；知识点只做检索、播放与进度锚点 | 已决 | §5.6、§6.6 |
