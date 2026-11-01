@@ -194,7 +194,7 @@ test('mock 云端接口满足对接清单', async (t) => {
     assert.equal(missing.status, 404)
   })
 
-  await t.test('体系接口返回课程树与知识点文章', async () => {
+  await t.test('体系接口返回课程树、章节教材与图示', async () => {
     const unauthorized = await api('/v1/catalog/courses')
     assert.equal(unauthorized.status, 401)
 
@@ -211,8 +211,14 @@ test('mock 云端接口满足对接清单', async (t) => {
 
     const tree = await api('/v1/catalog/courses/TC-101', { token: grant.accessToken })
     assert.equal(tree.status, 200)
+    assert.equal(tree.json.contractVersion, 2)
     assert.equal(tree.json.title, '趋势交易基础')
     assert.equal(tree.json.chapters.length, 3)
+    for (const chapter of tree.json.chapters) {
+      assert.equal(typeof chapter.hasArticle, 'boolean')
+      assert.equal(Number.isInteger(chapter.figureCount), true)
+      assert.equal(chapter.hasArticle, true)
+    }
     const points = tree.json.chapters.flatMap(chapter => chapter.knowledgePoints)
     assert.equal(points.length, 6)
     const first = points.find(item => item.knowledgePointId === 'KP-1.1')
@@ -226,13 +232,52 @@ test('mock 云端接口满足对接清单', async (t) => {
     const missingCourse = await api('/v1/catalog/courses/TC-404', { token: grant.accessToken })
     assert.equal(missingCourse.status, 404)
 
+    const chapterUnauthorized = await api('/v1/catalog/courses/TC-101/chapters/M1')
+    assert.equal(chapterUnauthorized.status, 401)
+
+    const chapter = await api('/v1/catalog/courses/TC-101/chapters/M2', {
+      token: grant.accessToken,
+    })
+    assert.equal(chapter.status, 200)
+    assert.equal(chapter.json.courseId, 'TC-101')
+    assert.equal(chapter.json.chapterId, 'M2')
+    assert.equal(chapter.json.title, '第二章 结构识别')
+    assert.equal(chapter.json.article.version, 1)
+    assert.equal(chapter.json.article.publishedAt > 0, true)
+    assert.match(chapter.json.article.markdown, /!\[[^\]\n]+\]\(figure:fig_demo_m2\)/)
+    assert.equal(Object.keys(chapter.json.figures).length, 1)
+    const figure = chapter.json.figures.fig_demo_m2
+    assert.equal(figure.width, 1600)
+    assert.equal(figure.height, 900)
+    assert.equal(typeof figure.alt, 'string')
+    assert.equal(new URL(figure.url).protocol, 'http:')
+    assert.deepEqual(chapter.json.adjacentChapters, [
+      { chapterId: 'M1', title: '第一章 趋势认知' },
+      { chapterId: 'M3', title: '第三章 买卖时机' },
+    ])
+
+    // 正文中每个 figure: 引用都必须能在 figures 映射命中。
+    const referenced = [...chapter.json.article.markdown.matchAll(/figure:([A-Za-z0-9._-]+)/g)]
+      .map((match) => match[1])
+    assert.equal(referenced.length > 0, true)
+    for (const figureId of referenced) assert.equal(figureId in chapter.json.figures, true)
+
+    const image = await fetch(figure.url)
+    assert.equal(image.status, 200)
+    assert.equal(image.headers.get('content-type'), 'image/svg+xml')
+    assert.equal(image.headers.get('cache-control'), 'private, max-age=600')
+    await image.arrayBuffer()
+
+    const missingChapter = await api('/v1/catalog/courses/TC-101/chapters/M9', {
+      token: grant.accessToken,
+    })
+    assert.equal(missingChapter.status, 404)
+
     const detail = await api('/v1/catalog/knowledge-points/KP-1.1', { token: grant.accessToken })
     assert.equal(detail.status, 200)
     assert.equal(detail.json.courseId, 'TC-101')
     assert.equal(detail.json.chapterId, 'M1')
-    assert.equal(typeof detail.json.article.markdown, 'string')
-    assert.equal(detail.json.article.version, 1)
-    assert.equal(detail.json.article.publishedAt > 0, true)
+    assert.equal('article' in detail.json, false)
     assert.deepEqual(detail.json.adjacentKnowledgePoints, [
       { knowledgePointId: 'KP-1.2', title: '趋势结构:推动段与调整段' },
     ])

@@ -81,6 +81,13 @@ const articleMarkdown = {
 }
 
 const ARTICLE_PUBLISHED_AT = Date.parse('2026-10-01T00:00:00.000Z')
+const MOCK_FIGURE_ID = 'fig_demo_m2'
+const MOCK_FIGURE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900">
+  <rect width="1600" height="900" fill="#f7f9fc"/>
+  <polyline points="120,700 360,560 560,620 820,380 1060,440 1320,220 1480,260" fill="none" stroke="#2a6ebb" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
+  <polyline points="120,760 400,690 700,650 980,540 1260,470 1480,410" fill="none" stroke="#e08a2e" stroke-width="10" stroke-dasharray="24 18" stroke-linecap="round"/>
+  <text x="120" y="130" font-size="56" font-family="sans-serif" fill="#33475b">均线多头排列示意</text>
+</svg>`
 const progress = new Map()
 
 const MAX_ASR_BODY_BYTES = 3 * 1024 * 1024
@@ -197,6 +204,39 @@ function courseSummary(courseId, deviceId) {
   }
 }
 
+function chapterKnowledgePointIds(courseId, chapterId) {
+  const ids = []
+  for (const segment of courseSegments(courseId)) {
+    if (segment.chapterId !== chapterId) continue
+    if (!ids.includes(segment.knowledgePointId)) ids.push(segment.knowledgePointId)
+  }
+  return ids
+}
+
+function chapterMarkdown(courseId, chapterId) {
+  const parts = []
+  for (const knowledgePointId of chapterKnowledgePointIds(courseId, chapterId)) {
+    if (knowledgePointId === 'KP-2.2') parts.push(`![均线多头排列示意](figure:${MOCK_FIGURE_ID})`)
+    const markdown = articleMarkdown[knowledgePointId]
+    if (markdown !== undefined) parts.push(markdown)
+  }
+  return parts.length === 0 ? undefined : parts.join('\n\n')
+}
+
+function chapterFigures(courseId, chapterId) {
+  if (!chapterKnowledgePointIds(courseId, chapterId).includes('KP-2.2')) return {}
+  const expires = Math.floor(Date.now() / 1000) + 600
+  return {
+    [MOCK_FIGURE_ID]: {
+      url: `${origin}/media/figures/${MOCK_FIGURE_ID}/cand_mock.svg?expires=${expires}&sig=mock`,
+      width: 1600,
+      height: 900,
+      alt: '均线多头排列示意',
+      caption: '均线多头排列示意',
+    },
+  }
+}
+
 function courseTree(courseId, deviceId) {
   const chapters = []
   for (const segment of courseSegments(courseId)) {
@@ -206,6 +246,8 @@ function courseTree(courseId, deviceId) {
         chapterId: segment.chapterId,
         title: chapterTitles[segment.chapterId] ?? segment.chapterId,
         position: chapters.length,
+        hasArticle: chapterMarkdown(courseId, segment.chapterId) !== undefined,
+        figureCount: Object.keys(chapterFigures(courseId, segment.chapterId)).length,
         knowledgePoints: [],
       }
       chapters.push(chapter)
@@ -222,9 +264,29 @@ function courseTree(courseId, deviceId) {
     })
   }
   return {
+    contractVersion: 2,
     courseId,
     title: courseTitles[courseId] ?? courseId,
     chapters,
+  }
+}
+
+function catalogChapter(courseId, chapterId) {
+  if (chapterKnowledgePointIds(courseId, chapterId).length === 0) return undefined
+  const chapters = [...new Set(courseSegments(courseId).map(segment => segment.chapterId))]
+  const index = chapters.indexOf(chapterId)
+  const markdown = chapterMarkdown(courseId, chapterId)
+  return {
+    chapterId,
+    courseId,
+    title: chapterTitles[chapterId] ?? chapterId,
+    article: markdown === undefined
+      ? null
+      : { markdown, version: 1, publishedAt: ARTICLE_PUBLISHED_AT },
+    figures: chapterFigures(courseId, chapterId),
+    adjacentChapters: [chapters[index - 1], chapters[index + 1]]
+      .filter((value) => value !== undefined)
+      .map((value) => ({ chapterId: value, title: chapterTitles[value] ?? value })),
   }
 }
 
@@ -239,15 +301,11 @@ function knowledgePointDetail(knowledgePointId) {
   const adjacent = [points[index - 1], points[index + 1]]
     .filter((value) => value !== undefined)
     .map((value) => ({ knowledgePointId: value, title: knowledgePointTitle(value) }))
-  const markdown = articleMarkdown[knowledgePointId]
   return {
     knowledgePointId,
     courseId: segment.courseId,
     chapterId: segment.chapterId,
     title: knowledgePointTitle(knowledgePointId),
-    article: markdown === undefined
-      ? null
-      : { markdown, version: 1, publishedAt: ARTICLE_PUBLISHED_AT },
     segmentId: segment.segmentId,
     adjacentKnowledgePoints: adjacent,
   }
@@ -673,6 +731,17 @@ const server = createServer(async (request, response) => {
     return
   }
 
+  if (request.method === 'GET' && url.pathname === `/media/figures/${MOCK_FIGURE_ID}/cand_mock.svg`) {
+    cors(response)
+    response.writeHead(200, {
+      'content-type': 'image/svg+xml',
+      'cache-control': 'private, max-age=600',
+      'x-content-type-options': 'nosniff',
+    })
+    response.end(MOCK_FIGURE_SVG)
+    return
+  }
+
   if (request.method === 'GET' && url.pathname === '/media/lesson.mp4') {
     const total = statSync(mediaFile).size
     const range = request.headers.range
@@ -734,6 +803,20 @@ const server = createServer(async (request, response) => {
     json(response, 200, {
       courses: courseIds.map(courseId => courseSummary(courseId, auth.deviceId)),
     })
+    return
+  }
+
+  const chapterMatch = /^\/v1\/catalog\/courses\/([^/]+)\/chapters\/([^/]+)$/.exec(url.pathname)
+  if (request.method === 'GET' && chapterMatch !== null) {
+    if (requireAuth(request, response) === undefined) return
+    const courseId = decodeURIComponent(chapterMatch[1])
+    const chapterId = decodeURIComponent(chapterMatch[2])
+    const chapter = catalogChapter(courseId, chapterId)
+    if (chapter === undefined) {
+      json(response, 404, { error: 'chapter not found' })
+      return
+    }
+    json(response, 200, chapter)
     return
   }
 
