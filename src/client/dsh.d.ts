@@ -1,6 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type {
   AuthStatus,
+  CatalogChapterArticle,
   CatalogCourse,
   CatalogCourseSummary,
   DeviceAuthPoll,
@@ -60,6 +61,10 @@ export type RemoteCatalogCourseResult =
   | { ok: true; value: CatalogCourse }
   | { ok: false; error: { code: string; message: string } }
 
+export type RemoteCatalogChapterResult =
+  | { ok: true; value: CatalogChapterArticle }
+  | { ok: false; error: { code: string; message: string } }
+
 export type RemoteKnowledgePointResult =
   | { ok: true; value: KnowledgePointDetail }
   | { ok: false; error: { code: string; message: string } }
@@ -115,6 +120,7 @@ interface ClientRemoteService {
     reportPlayerStarted(startupMs: number, autoplayBlocked: boolean): Promise<RemoteReportResult>
     catalogCourses(): Promise<RemoteCatalogCoursesResult>
     catalogCourse(courseId: string): Promise<RemoteCatalogCourseResult>
+    catalogChapter(courseId: string, chapterId: string): Promise<RemoteCatalogChapterResult>
     knowledgePoint(knowledgePointId: string): Promise<RemoteKnowledgePointResult>
     reportProgress(knowledgePointId: string, watchedSec: number, completed: boolean): Promise<RemoteProgressResult>
     setLearnerContext(sessionId: string, update: LearnerContextUpdate): Promise<RemoteLearnerContextResult>

@@ -6,6 +6,7 @@ import { createTypertRemoteInfo } from '@deepseek-ai/dsh-typert-protocol/remote-
 import type { TypertRemoteSpec } from '@deepseek-ai/dsh-typert-protocol/types'
 import type {
   AuthStatus,
+  CatalogChapterArticle,
   CatalogCourse,
   CatalogCourseSummary,
   DeviceAuthStart,
@@ -24,6 +25,7 @@ import type { ComposerInputActions } from './voice/controller.js'
 import { VoiceButton } from './voice/voice-button.js'
 import type {
   RemoteAuthStatusResult,
+  RemoteCatalogChapterResult,
   RemoteCatalogCourseResult,
   RemoteCatalogCoursesResult,
   RemoteDeviceAuthPollResult,
@@ -132,19 +134,44 @@ const catalogChapterSchema = z.object({
   chapterId: z.string(),
   title: z.string(),
   position: z.number(),
+  hasArticle: z.boolean(),
+  figureCount: z.number(),
   knowledgePoints: z.array(catalogKnowledgePointSchema),
 })
 
 const catalogCourseSchema = z.object({
+  contractVersion: z.number(),
   courseId: z.string(),
   title: z.string(),
   chapters: z.array(catalogChapterSchema),
 })
 
-const knowledgePointArticleSchema = z.object({
+const chapterArticleSchema = z.object({
   markdown: z.string(),
   version: z.number(),
   publishedAt: z.number(),
+})
+
+const chapterFigureSchema = z.object({
+  url: z.string(),
+  width: z.number(),
+  height: z.number(),
+  alt: z.string(),
+  caption: z.string().optional(),
+})
+
+const relatedChapterSchema = z.object({
+  chapterId: z.string(),
+  title: z.string(),
+})
+
+const catalogChapterArticleSchema = z.object({
+  chapterId: z.string(),
+  courseId: z.string(),
+  title: z.string(),
+  article: z.union([chapterArticleSchema, z.null()]),
+  figures: z.record(z.string(), chapterFigureSchema),
+  adjacentChapters: z.array(relatedChapterSchema),
 })
 
 const knowledgePointDetailSchema = z.object({
@@ -152,7 +179,6 @@ const knowledgePointDetailSchema = z.object({
   courseId: z.string(),
   chapterId: z.string(),
   title: z.string(),
-  article: z.union([knowledgePointArticleSchema, z.null()]),
   segmentId: z.string().optional(),
   adjacentKnowledgePoints: z.array(relatedKnowledgePointSchema),
 })
@@ -276,6 +302,31 @@ const spec: TypertRemoteSpec = {
       ],
       cancellation: { parameter: 'signal' },
       result: codec('dsh-plugin-trend-coach#trendCoach/catalogCourse:result', () => catalogCourseSchema),
+    },
+    'trendCoach/catalogChapter': {
+      service: 'trendCoach',
+      invocation: { kind: 'direct' },
+      parameters: [
+        {
+          name: 'courseId',
+          wire: 'courseId',
+          source: 'json',
+          codec: codec('dsh-plugin-trend-coach#trendCoach/catalogChapter:courseId', () => z.string()),
+          strictCodec: codec('dsh-plugin-trend-coach#trendCoach/catalogChapter:courseId', () => z.string()),
+        },
+        {
+          name: 'chapterId',
+          wire: 'chapterId',
+          source: 'json',
+          codec: codec('dsh-plugin-trend-coach#trendCoach/catalogChapter:chapterId', () => z.string()),
+          strictCodec: codec('dsh-plugin-trend-coach#trendCoach/catalogChapter:chapterId', () => z.string()),
+        },
+      ],
+      cancellation: { parameter: 'signal' },
+      result: codec(
+        'dsh-plugin-trend-coach#trendCoach/catalogChapter:result',
+        () => catalogChapterArticleSchema,
+      ),
     },
     'trendCoach/knowledgePoint': {
       service: 'trendCoach',
@@ -480,6 +531,7 @@ interface TrendCoachRemote {
   createPlaybackSession(segmentId: string): Promise<RemotePlaybackResult>
   catalogCourses(): Promise<RemoteCatalogCoursesResult>
   catalogCourse(courseId: string): Promise<RemoteCatalogCourseResult>
+  catalogChapter(courseId: string, chapterId: string): Promise<RemoteCatalogChapterResult>
   knowledgePoint(knowledgePointId: string): Promise<RemoteKnowledgePointResult>
   reportProgress(
     knowledgePointId: string,
@@ -1327,6 +1379,8 @@ export function apply(ctx: Context): void {
             pollDeviceAuth: () => scoped.remote.trendCoach.pollDeviceAuth(),
             catalogCourses: () => scoped.remote.trendCoach.catalogCourses(),
             catalogCourse: (courseId: string) => scoped.remote.trendCoach.catalogCourse(courseId),
+            catalogChapter: (courseId: string, chapterId: string) =>
+              scoped.remote.trendCoach.catalogChapter(courseId, chapterId),
             knowledgePoint: (knowledgePointId: string) =>
               scoped.remote.trendCoach.knowledgePoint(knowledgePointId),
             openSegment: (target: { segmentId: string; knowledgePointId?: string; title?: string }) =>

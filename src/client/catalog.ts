@@ -1,13 +1,23 @@
 import * as React from 'react'
 import type {
   AuthStatus,
+  CatalogChapterArticle,
   CatalogCourse,
   CatalogCourseSummary,
+  ChapterFigure,
   DeviceAuthStart,
   KnowledgePointDetail,
 } from '../shared/contracts.js'
+import {
+  figureCaption,
+  isChapterCacheFresh,
+  isRenderableFigureUrl,
+  parseFigureBlock,
+  resolveFigure,
+} from './chapter-article.js'
 import type {
   RemoteAuthStatusResult,
+  RemoteCatalogChapterResult,
   RemoteCatalogCourseResult,
   RemoteCatalogCoursesResult,
   RemoteDeviceAuthPollResult,
@@ -28,28 +38,40 @@ export interface CatalogPanelProps {
   pollDeviceAuth: () => Promise<RemoteDeviceAuthPollResult>
   catalogCourses: () => Promise<RemoteCatalogCoursesResult>
   catalogCourse: (courseId: string) => Promise<RemoteCatalogCourseResult>
+  catalogChapter: (courseId: string, chapterId: string) => Promise<RemoteCatalogChapterResult>
   knowledgePoint: (knowledgePointId: string) => Promise<RemoteKnowledgePointResult>
   openSegment: (target: CatalogOpenTarget) => Promise<void>
+}
+
+interface ChapterCacheEntry {
+  courseId: string
+  chapterId: string
+  article: CatalogChapterArticle
+  fetchedAt: number
+  refreshed: boolean
 }
 
 interface CatalogCache {
   courses?: CatalogCourseSummary[]
   course?: CatalogCourse
   point?: KnowledgePointDetail
+  chapter?: ChapterCacheEntry
 }
 
-// 切换右栏 tab 会重建面板；保留课程树与当前阅读位置。
+// 切换右栏 tab 会重建面板；保留课程树与当前阅读位置，离开体系页时丢弃章节正文。
 const cache: CatalogCache = {}
 
 interface MarkdownBlock {
-  type: 'heading' | 'paragraph' | 'list' | 'quote' | 'code' | 'hr'
+  type: 'heading' | 'paragraph' | 'list' | 'quote' | 'code' | 'hr' | 'figure'
   level?: number
   ordered?: boolean
   text?: string
   items?: string[]
+  figureId?: string
+  alt?: string
 }
 
-const INLINE_TOKEN = /(\*\*[^*\n]+\*\*|__[^_\n]+__|`[^`\n]+`|\*[^*\n]+\*|_[^_\n]+_|\[[^\]\n]+\]\([^)\s]+\))/g
+const INLINE_TOKEN = /(!\[[^\]\n]*\]\([^)\n]*\)|\*\*[^*\n]+\*\*|__[^_\n]+__|`[^`\n]+`|\*[^*\n]+\*|_[^_\n]+_|\[[^\]\n]+\]\([^)\s]+\))/g
 const LINK_TOKEN = /^\[([^\]\n]+)\]\(([^)\s]+)\)$/
 
 function safeHref(raw: string): string | undefined {
@@ -71,7 +93,10 @@ function renderInline(text: string, keyPrefix: string): React.ReactNode[] {
     const at = match.index ?? 0
     if (at > last) nodes.push(text.slice(last, at))
     const key = `${keyPrefix}-i${index++}`
-    if (token.startsWith('**') || token.startsWith('__')) {
+    // 图片只允许独立成块的 figure: 引用；行内外链图片一律按纯文本展示，不发起请求。
+    if (token.startsWith('![')) {
+      nodes.push(token)
+    } else if (token.startsWith('**') || token.startsWith('__')) {
       nodes.push(React.createElement('strong', { key }, token.slice(2, -2)))
     } else if (token.startsWith('`')) {
       nodes.push(React.createElement('code', { key }, token.slice(1, -1)))
@@ -129,6 +154,13 @@ function parseMarkdown(markdown: string): MarkdownBlock[] {
       flushParagraph()
       continue
     }
+    const figureBlock = parseFigureBlock(line)
+    if (figureBlock !== undefined) {
+      flushParagraph()
+      if (figureBlock === 'invalid') blocks.push({ type: 'paragraph', text: line.trim() })
+      else blocks.push({ type: 'figure', figureId: figureBlock.figureId, alt: figureBlock.alt })
+      continue
+    }
     const heading = /^(#{1,6})\s+(.*)$/.exec(line)
     if (heading !== null) {
       flushParagraph()
@@ -169,9 +201,56 @@ function parseMarkdown(markdown: string): MarkdownBlock[] {
 
 const HEADING_TAGS = ['h1', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'] as const
 
-function renderBlock(block: MarkdownBlock, index: number): React.ReactElement {
+function renderFigurePlaceholder(key: string, label: string): React.ReactElement {
+  return React.createElement('figure', { key, style: { margin: '10px 0' } },
+    React.createElement('div', {
+      style: {
+        background: '#f5f5f5',
+        color: '#888',
+        padding: '14px 8px',
+        borderRadius: 4,
+        textAlign: 'center',
+        fontSize: 12,
+      },
+    }, label.length > 0 ? `图示暂不可用：${label}` : '图示暂不可用'))
+}
+
+function renderBlock(
+  block: MarkdownBlock,
+  index: number,
+  figures: Record<string, ChapterFigure>,
+  onImageError: (() => void) | undefined,
+): React.ReactElement {
   const key = `b${index}`
   switch (block.type) {
+    case 'figure': {
+      const resolution = resolveFigure(
+        { figureId: block.figureId ?? '', alt: block.alt ?? '' },
+        figures,
+      )
+      if (resolution.kind === 'placeholder') return renderFigurePlaceholder(key, resolution.alt)
+      const { figure } = resolution
+      if (!isRenderableFigureUrl(figure.url)) {
+        return renderFigurePlaceholder(key, resolution.alt)
+      }
+      const caption = figureCaption(figure, resolution.alt)
+      return React.createElement('figure', { key, style: { margin: '10px 0' } },
+        React.createElement('img', {
+          src: figure.url,
+          width: figure.width,
+          height: figure.height,
+          alt: resolution.alt.length > 0 ? resolution.alt : figure.alt,
+          loading: 'lazy',
+          decoding: 'async',
+          referrerPolicy: 'no-referrer',
+          ...(onImageError === undefined ? {} : { onError: onImageError }),
+          style: { maxWidth: '100%', height: 'auto', borderRadius: 4 },
+        }),
+        caption.length > 0
+          ? React.createElement('figcaption', { style: { color: '#666', fontSize: 12, marginTop: 4 } }, caption)
+          : null,
+      )
+    }
     case 'heading': {
       const tag = HEADING_TAGS[Math.min(Math.max(block.level ?? 2, 1), 6)]
       return React.createElement(tag, {
@@ -210,10 +289,18 @@ function renderBlock(block: MarkdownBlock, index: number): React.ReactElement {
   }
 }
 
-function Markdown({ markdown }: { markdown: string }): React.ReactElement {
+function Markdown({
+  markdown,
+  figures,
+  onImageError,
+}: {
+  markdown: string
+  figures: Record<string, ChapterFigure>
+  onImageError?: () => void
+}): React.ReactElement {
   const blocks = React.useMemo(() => parseMarkdown(markdown), [markdown])
   return React.createElement('div', { style: { lineHeight: 1.7 } },
-    ...blocks.map(renderBlock))
+    ...blocks.map((block, index) => renderBlock(block, index, figures, onImageError)))
 }
 
 function formatSeconds(value: number): string {
@@ -249,6 +336,7 @@ export function CatalogPanel({
   pollDeviceAuth,
   catalogCourses,
   catalogCourse,
+  catalogChapter,
   knowledgePoint,
   openSegment,
 }: CatalogPanelProps): React.ReactElement {
@@ -259,6 +347,9 @@ export function CatalogPanel({
 
   const [courses, setCourses] = React.useState<CatalogCourseSummary[] | undefined>(() => cache.courses)
   const [course, setCourse] = React.useState<CatalogCourse | undefined>(() => cache.course)
+  const [chapter, setChapter] = React.useState<CatalogChapterArticle | undefined>(
+    () => cache.chapter?.article,
+  )
   const [point, setPoint] = React.useState<KnowledgePointDetail | undefined>(() => cache.point)
   const [loading, setLoading] = React.useState(false)
   const [error, setError] = React.useState<string | undefined>(undefined)
@@ -383,8 +474,10 @@ export function CatalogPanel({
       if (result.ok) {
         cache.course = result.value
         cache.point = undefined
+        cache.chapter = undefined
         setCourse(result.value)
         setPoint(undefined)
+        setChapter(undefined)
         learnerContextStore.setScene({
           courseId: result.value.courseId,
           courseTitle: result.value.title,
@@ -428,17 +521,84 @@ export function CatalogPanel({
     setLoading(false)
   }
 
+  const applyChapter = (value: CatalogChapterArticle, refreshed: boolean) => {
+    cache.chapter = {
+      courseId: value.courseId,
+      chapterId: value.chapterId,
+      article: value,
+      fetchedAt: Date.now(),
+      refreshed,
+    }
+    setChapter(value)
+    setPoint(undefined)
+  }
+
+  const fetchChapter = async (courseId: string, chapterId: string, refresh: boolean) => {
+    setLoading(true)
+    setError(undefined)
+    try {
+      const result = await catalogChapter(courseId, chapterId)
+      if (result.ok) {
+        applyChapter(result.value, refresh)
+        learnerContextStore.setScene({
+          courseId,
+          ...(cache.course?.courseId === courseId ? { courseTitle: cache.course.title } : {}),
+          chapterId,
+          chapterTitle: result.value.title,
+        })
+      } else {
+        setError(result.error.message)
+      }
+    } catch (failure: unknown) {
+      setError(failure instanceof Error ? failure.message : '章节教材读取失败')
+    }
+    setLoading(false)
+  }
+
+  const openChapter = async (chapterId: string) => {
+    const active = cache.course
+    if (active === undefined) return
+    const cached = cache.chapter
+    if (cached !== undefined && cached.courseId === active.courseId
+      && cached.chapterId === chapterId && isChapterCacheFresh(cached.fetchedAt)) {
+      setChapter(cached.article)
+      setPoint(undefined)
+      setError(undefined)
+      learnerContextStore.setScene({
+        courseId: active.courseId,
+        courseTitle: active.title,
+        chapterId,
+        chapterTitle: cached.article.title,
+      })
+      return
+    }
+    await fetchChapter(active.courseId, chapterId, false)
+  }
+
+  /** 签名过期导致图片加载失败时重拉本章一次；仍失败则停留在占位，不循环重试。 */
+  const handleFigureError = () => {
+    const cached = cache.chapter
+    const active = cache.course
+    if (cached === undefined || active === undefined || cached.refreshed) return
+    cached.refreshed = true
+    void fetchChapter(active.courseId, cached.chapterId, true)
+  }
+
   const backToCourses = () => {
     cache.course = undefined
     cache.point = undefined
+    cache.chapter = undefined
     setCourse(undefined)
     setPoint(undefined)
+    setChapter(undefined)
     learnerContextStore.clearScene()
   }
 
   const backToCourse = () => {
     cache.point = undefined
+    cache.chapter = undefined
     setPoint(undefined)
+    setChapter(undefined)
     if (course !== undefined) {
       learnerContextStore.setScene({
         courseId: course.courseId,
@@ -518,15 +678,14 @@ export function CatalogPanel({
         style: { border: 0, background: 'transparent', color: '#2a6ebb', cursor: 'pointer', padding: 0 },
       }, '← 返回课程结构'),
       React.createElement('h4', { key: 'point-title', style: { margin: '8px 0 2px' } }, point.title),
-      point.article === null
-        ? React.createElement('p', { key: 'no-article', style: { color: '#666' } }, '该知识点暂无文章。')
-        : React.createElement(
-          'div',
-          { key: 'article', style: { border: '1px solid #eee', borderRadius: 4, padding: '6px 10px', marginTop: 6 } },
-          React.createElement('p', { key: 'meta', style: { margin: '0 0 4px', color: '#888', fontSize: 12 } },
-            `文章 v${point.article.version} · 发布于 ${formatDate(point.article.publishedAt)}`),
-          React.createElement(Markdown, { key: 'markdown', markdown: point.article.markdown }),
-        ),
+      React.createElement('p', { key: 'point-meta', style: { margin: '0 0 4px', color: '#888', fontSize: 12 } },
+        `${point.courseId} · ${point.chapterId}`),
+      React.createElement('button', {
+        key: 'open-chapter',
+        type: 'button',
+        onClick: () => void openChapter(point.chapterId),
+        style: { border: 0, background: 'transparent', color: '#2a6ebb', cursor: 'pointer', padding: 0, marginTop: 4 },
+      }, '阅读本章教材'),
       point.segmentId === undefined
         ? null
         : React.createElement('button', {
@@ -553,19 +712,37 @@ export function CatalogPanel({
           ),
         ),
     )
-  } else if (course !== undefined) {
+  } else if (chapter !== undefined) {
+    const chapterOutline = cache.course?.chapters.find(
+      (item) => item.chapterId === chapter.chapterId,
+    )
     body.push(
       React.createElement('button', {
-        key: 'back-courses',
+        key: 'back-course-from-chapter',
         type: 'button',
-        onClick: backToCourses,
+        onClick: backToCourse,
         style: { border: 0, background: 'transparent', color: '#2a6ebb', cursor: 'pointer', padding: 0 },
-      }, '← 返回课程列表'),
-      React.createElement('h4', { key: 'course-title', style: { margin: '8px 0 2px' } }, course.title),
-      ...course.chapters.map((chapter) =>
-        React.createElement('section', { key: chapter.chapterId, style: { marginTop: 8 } },
-          React.createElement('div', { style: { fontWeight: 600, color: '#444' } }, chapter.title),
-          ...chapter.knowledgePoints.map((item) =>
+      }, '← 返回课程结构'),
+      React.createElement('h4', { key: 'chapter-title', style: { margin: '8px 0 2px' } }, chapter.title),
+      chapter.article === null
+        ? React.createElement('p', { key: 'no-chapter-article', style: { color: '#666' } }, '本章教材暂未发布。')
+        : React.createElement(
+          'div',
+          { key: 'chapter-article', style: { border: '1px solid #eee', borderRadius: 4, padding: '6px 10px', marginTop: 6 } },
+          React.createElement('p', { key: 'meta', style: { margin: '0 0 4px', color: '#888', fontSize: 12 } },
+            `教材 v${chapter.article.version} · 发布于 ${formatDate(chapter.article.publishedAt)}`),
+          React.createElement(Markdown, {
+            key: 'markdown',
+            markdown: chapter.article.markdown,
+            figures: chapter.figures,
+            onImageError: handleFigureError,
+          }),
+        ),
+      chapterOutline === undefined
+        ? null
+        : React.createElement('div', { key: 'chapter-points', style: { marginTop: 10 } },
+          React.createElement('div', { style: { color: '#666', marginBottom: 2 } }, '本章知识点：'),
+          ...chapterOutline.knowledgePoints.map((item) =>
             React.createElement('button', {
               key: item.knowledgePointId,
               type: 'button',
@@ -577,6 +754,53 @@ export function CatalogPanel({
               item.completed
                 ? '已完成'
                 : item.watchedSec > 0 ? `已看 ${formatSeconds(item.watchedSec)}` : '未开始',
+            ),
+            ),
+          ),
+        ),
+      ...chapter.adjacentChapters.map((adjacent) =>
+        React.createElement('button', {
+          key: `adjacent-${adjacent.chapterId}`,
+          type: 'button',
+          onClick: () => void openChapter(adjacent.chapterId),
+          style: { ...buttonStyle(), marginTop: 4 },
+        }, `${adjacent.title} · ${adjacent.chapterId}`),
+      ),
+    )
+  } else if (course !== undefined) {
+    body.push(
+      React.createElement('button', {
+        key: 'back-courses',
+        type: 'button',
+        onClick: backToCourses,
+        style: { border: 0, background: 'transparent', color: '#2a6ebb', cursor: 'pointer', padding: 0 },
+      }, '← 返回课程列表'),
+      React.createElement('h4', { key: 'course-title', style: { margin: '8px 0 2px' } }, course.title),
+      ...course.chapters.map((item) =>
+        React.createElement('section', { key: item.chapterId, style: { marginTop: 8 } },
+          React.createElement('button', {
+            type: 'button',
+            onClick: () => void openChapter(item.chapterId),
+            style: { ...buttonStyle(), borderTop: 0, padding: '2px 0', fontWeight: 600, color: '#444' },
+          },
+          React.createElement('div', null, item.title),
+          React.createElement('div', { style: { color: '#888', fontSize: 12, fontWeight: 400 } },
+            `${item.knowledgePoints.length} 个知识点 · ${item.hasArticle ? '有教材' : '暂无教材'}`
+              + (item.figureCount > 0 ? ` · ${item.figureCount} 张图示` : ''),
+          ),
+          ),
+          ...item.knowledgePoints.map((knowledgePoint) =>
+            React.createElement('button', {
+              key: knowledgePoint.knowledgePointId,
+              type: 'button',
+              onClick: () => void openPoint(knowledgePoint.knowledgePointId),
+              style: buttonStyle(),
+            },
+            React.createElement('div', null, knowledgePoint.title),
+            React.createElement('div', { style: { color: '#888', fontSize: 12 } },
+              knowledgePoint.completed
+                ? '已完成'
+                : knowledgePoint.watchedSec > 0 ? `已看 ${formatSeconds(knowledgePoint.watchedSec)}` : '未开始',
             ),
             ),
           ),
