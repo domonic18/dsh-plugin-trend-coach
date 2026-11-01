@@ -4,6 +4,7 @@ import type { AuthManager } from '../auth.js'
 import { normalizeTopK, requireSessionId, toRemoteError } from '../errors.js'
 import type {
   AuthStatus,
+  CatalogChapterArticle,
   CatalogCourse,
   CatalogCourseSummary,
   DeviceAuthPoll,
@@ -20,6 +21,7 @@ import type {
 } from '../shared/contracts.js'
 import {
   createPlaybackSession,
+  getCatalogChapter,
   getCatalogCourse,
   getKnowledgePoint,
   getSegment,
@@ -91,6 +93,16 @@ export class TrendCoachService extends TypertRemoteService {
   @Remote
   async catalogCourse(courseId: string, signal: AbortSignal): Promise<CatalogCourse> {
     return await this.invoke('课程结构读取', () => getCatalogCourse(this.auth, courseId, signal))
+  }
+
+  @Remote
+  async catalogChapter(
+    courseId: string,
+    chapterId: string,
+    signal: AbortSignal,
+  ): Promise<CatalogChapterArticle> {
+    return await this.invoke('章节教材读取', () =>
+      getCatalogChapter(this.auth, courseId, chapterId, signal))
   }
 
   @Remote

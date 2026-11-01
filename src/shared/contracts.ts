@@ -73,19 +73,44 @@ export interface CatalogChapter {
   chapterId: string
   title: string
   position: number
+  hasArticle: boolean
+  figureCount: number
   knowledgePoints: CatalogKnowledgePoint[]
 }
 
 export interface CatalogCourse {
+  contractVersion: number
   courseId: string
   title: string
   chapters: CatalogChapter[]
 }
 
-export interface KnowledgePointArticle {
+export interface ChapterArticle {
   markdown: string
   version: number
   publishedAt: number
+}
+
+export interface ChapterFigure {
+  url: string
+  width: number
+  height: number
+  alt: string
+  caption?: string
+}
+
+export interface RelatedChapter {
+  chapterId: string
+  title: string
+}
+
+export interface CatalogChapterArticle {
+  chapterId: string
+  courseId: string
+  title: string
+  article: ChapterArticle | null
+  figures: Record<string, ChapterFigure>
+  adjacentChapters: RelatedChapter[]
 }
 
 export interface KnowledgePointDetail {
@@ -93,7 +118,6 @@ export interface KnowledgePointDetail {
   courseId: string
   chapterId: string
   title: string
-  article: KnowledgePointArticle | null
   segmentId?: string
   adjacentKnowledgePoints: RelatedKnowledgePoint[]
 }
@@ -135,7 +159,12 @@ export const MAX_TITLE_LENGTH = 200
 export const MAX_COURSES = 50
 export const MAX_CHAPTERS = 50
 export const MAX_KNOWLEDGE_POINTS = 1000
-export const MAX_ARTICLE_CHARS = 20000
+export const MAX_CHAPTER_MARKDOWN_CHARS = 20000
+export const MAX_FIGURES_PER_CHAPTER = 3
+export const MIN_FIGURE_DIMENSION = 800
+export const MAX_FIGURE_DIMENSION = 20000
+export const MIN_CATALOG_CONTRACT_VERSION = 2
+export const MAX_KNOWN_CATALOG_CONTRACT_VERSION = 2
 export const MAX_WATCHED_SEC = 86400
 
 export const MAX_LEARNER_SELECTED_RAW = 4000

@@ -198,6 +198,14 @@ export function requireEnabled(value: unknown): boolean {
   return value
 }
 
+export function requireChapterId(value: unknown): string {
+  if (typeof value !== 'string' || value.length === 0
+    || value.length > MAX_CHAPTER_ID_LENGTH || !CHAPTER_ID_PATTERN.test(value)) {
+    throw new InputError('章节 ID 格式不合法')
+  }
+  return value
+}
+
 export function optionalChapterId(value: unknown): string | undefined {
   if (value === undefined) return undefined
   if (typeof value !== 'string') throw new InputError('章节 ID 必须是字符串')

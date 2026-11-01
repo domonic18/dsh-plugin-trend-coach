@@ -7,6 +7,7 @@ import {
   normalizeTopK,
   optionalCourseId,
   readJsonResponse,
+  requireChapterId,
   requireCompleted,
   requireCourseId,
   requireKnowledgePointId,
@@ -17,9 +18,12 @@ import {
 } from '../errors.js'
 import { sanitizeVoiceText } from '../untrusted.js'
 import {
-  MAX_ARTICLE_CHARS,
+  MAX_CHAPTER_MARKDOWN_CHARS,
   MAX_CHAPTERS,
   MAX_COURSES,
+  MAX_FIGURE_DIMENSION,
+  MAX_FIGURES_PER_CHAPTER,
+  MAX_KNOWN_CATALOG_CONTRACT_VERSION,
   MAX_KNOWLEDGE_POINTS,
   MAX_RELATED_POINTS,
   MAX_SEGMENT_TEXT,
@@ -27,12 +31,17 @@ import {
   MAX_VOICE_DURATION_MS,
   MAX_VOICE_TRANSCRIPT_CHARS,
   MAX_WATCHED_SEC,
+  MIN_CATALOG_CONTRACT_VERSION,
+  MIN_FIGURE_DIMENSION,
   type CatalogChapter,
+  type CatalogChapterArticle,
   type CatalogCourse,
   type CatalogCourseSummary,
   type CatalogKnowledgePoint,
-  type KnowledgePointArticle,
+  type ChapterArticle,
+  type ChapterFigure,
   type KnowledgePointDetail,
+  type RelatedChapter,
   type PlaybackSession,
   type ProgressResult,
   type RelatedKnowledgePoint,
@@ -143,15 +152,22 @@ function isCatalogKnowledgePoint(value: unknown): value is CatalogKnowledgePoint
   )
 }
 
+function isChapterId(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 64
+    && /^[A-Za-z0-9._-]+$/.test(value)
+}
+
 function isCatalogChapter(value: unknown): value is CatalogChapter {
   if (typeof value !== 'object' || value === null) return false
   const candidate = value as Record<string, unknown>
   return (
-    typeof candidate.chapterId === 'string' && candidate.chapterId.length > 0
-      && candidate.chapterId.length <= 64 &&
+    isChapterId(candidate.chapterId) &&
     typeof candidate.title === 'string' && candidate.title.length > 0
       && candidate.title.length <= MAX_TITLE_LENGTH &&
     typeof candidate.position === 'number' && Number.isInteger(candidate.position) &&
+    typeof candidate.hasArticle === 'boolean' &&
+    typeof candidate.figureCount === 'number' && Number.isInteger(candidate.figureCount)
+      && candidate.figureCount >= 0 && candidate.figureCount <= MAX_FIGURES_PER_CHAPTER &&
     Array.isArray(candidate.knowledgePoints) && candidate.knowledgePoints.every(isCatalogKnowledgePoint)
   )
 }
@@ -159,6 +175,9 @@ function isCatalogChapter(value: unknown): value is CatalogChapter {
 function isCatalogCourse(value: unknown): value is CatalogCourse {
   if (typeof value !== 'object' || value === null) return false
   const candidate = value as Record<string, unknown>
+  if (candidate.contractVersion !== undefined
+    && (typeof candidate.contractVersion !== 'number'
+      || !Number.isInteger(candidate.contractVersion) || candidate.contractVersion < 1)) return false
   if (!isCourseId(candidate.courseId)) return false
   if (typeof candidate.title !== 'string' || candidate.title.length === 0
     || candidate.title.length > MAX_TITLE_LENGTH) return false
@@ -169,16 +188,75 @@ function isCatalogCourse(value: unknown): value is CatalogCourse {
   return points <= MAX_KNOWLEDGE_POINTS
 }
 
-function isKnowledgePointArticle(value: unknown): value is KnowledgePointArticle {
+function isChapterArticle(value: unknown): value is ChapterArticle {
   if (typeof value !== 'object' || value === null) return false
   const candidate = value as Record<string, unknown>
   return (
     typeof candidate.markdown === 'string' && candidate.markdown.length > 0
-      && candidate.markdown.length <= MAX_ARTICLE_CHARS &&
+      && candidate.markdown.length <= MAX_CHAPTER_MARKDOWN_CHARS &&
     typeof candidate.version === 'number' && Number.isInteger(candidate.version) && candidate.version >= 1 &&
     typeof candidate.publishedAt === 'number' && Number.isFinite(candidate.publishedAt)
       && candidate.publishedAt > 0
   )
+}
+
+/** 图示地址只允许 http(s)，且不得携带账号密码；正文外链与 data: 一律拒绝。 */
+function isFigureUrl(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 2048) return false
+  try {
+    const url = new URL(value)
+    return (url.protocol === 'http:' || url.protocol === 'https:')
+      && url.username === '' && url.password === ''
+  } catch {
+    return false
+  }
+}
+
+function isChapterFigure(value: unknown): value is ChapterFigure {
+  if (typeof value !== 'object' || value === null) return false
+  const candidate = value as Record<string, unknown>
+  return (
+    isFigureUrl(candidate.url) &&
+    typeof candidate.width === 'number' && Number.isInteger(candidate.width)
+      && candidate.width >= MIN_FIGURE_DIMENSION && candidate.width <= MAX_FIGURE_DIMENSION &&
+    typeof candidate.height === 'number' && Number.isInteger(candidate.height)
+      && candidate.height >= MIN_FIGURE_DIMENSION && candidate.height <= MAX_FIGURE_DIMENSION &&
+    typeof candidate.alt === 'string' && candidate.alt.length > 0
+      && candidate.alt.length <= MAX_TITLE_LENGTH &&
+    (candidate.caption === undefined
+      || (typeof candidate.caption === 'string' && candidate.caption.length > 0
+        && candidate.caption.length <= MAX_TITLE_LENGTH))
+  )
+}
+
+function isRelatedChapter(value: unknown): value is RelatedChapter {
+  if (typeof value !== 'object' || value === null) return false
+  const candidate = value as Record<string, unknown>
+  return (
+    isChapterId(candidate.chapterId) &&
+    typeof candidate.title === 'string' && candidate.title.length > 0
+      && candidate.title.length <= MAX_TITLE_LENGTH
+  )
+}
+
+function isCatalogChapterArticle(value: unknown): value is CatalogChapterArticle {
+  if (typeof value !== 'object' || value === null) return false
+  const candidate = value as Record<string, unknown>
+  if (!isChapterId(candidate.chapterId) || !isCourseId(candidate.courseId)) return false
+  if (typeof candidate.title !== 'string' || candidate.title.length === 0
+    || candidate.title.length > MAX_TITLE_LENGTH) return false
+  if (candidate.article !== null && !isChapterArticle(candidate.article)) return false
+  if (typeof candidate.figures !== 'object' || candidate.figures === null
+    || Array.isArray(candidate.figures)) return false
+  const figures = Object.entries(candidate.figures)
+  if (figures.length > MAX_FIGURES_PER_CHAPTER) return false
+  for (const [figureId, figure] of figures) {
+    if (!/^fig_[A-Za-z0-9._-]{1,60}$/.test(figureId) || !isChapterFigure(figure)) return false
+  }
+  if (!Array.isArray(candidate.adjacentChapters)
+    || candidate.adjacentChapters.length > MAX_RELATED_POINTS
+    || !candidate.adjacentChapters.every(isRelatedChapter)) return false
+  return true
 }
 
 function isKnowledgePointDetail(value: unknown): value is KnowledgePointDetail {
@@ -187,11 +265,9 @@ function isKnowledgePointDetail(value: unknown): value is KnowledgePointDetail {
   return (
     isKnowledgePointId(candidate.knowledgePointId) &&
     isCourseId(candidate.courseId) &&
-    typeof candidate.chapterId === 'string' && candidate.chapterId.length > 0
-      && candidate.chapterId.length <= 64 &&
+    isChapterId(candidate.chapterId) &&
     typeof candidate.title === 'string' && candidate.title.length > 0
       && candidate.title.length <= MAX_TITLE_LENGTH &&
-    (candidate.article === null || isKnowledgePointArticle(candidate.article)) &&
     (candidate.segmentId === undefined || isSegmentId(candidate.segmentId)) &&
     Array.isArray(candidate.adjacentKnowledgePoints) &&
     candidate.adjacentKnowledgePoints.length <= MAX_RELATED_POINTS &&
@@ -339,7 +415,50 @@ export async function getCatalogCourse(
   if (!isCatalogCourse(payload) || payload.courseId !== normalizedCourseId) {
     throw new InvalidResponseError('课程服务返回的课程结构不合法')
   }
+  const contractVersion = payload.contractVersion ?? 1
+  if (contractVersion < MIN_CATALOG_CONTRACT_VERSION) {
+    throw new InvalidResponseError('课程内容版本过旧，请在后台重新生成并发布')
+  }
+  if (contractVersion > MAX_KNOWN_CATALOG_CONTRACT_VERSION) {
+    throw new InvalidResponseError('课程内容已升级，请更新插件后再试')
+  }
+  return { ...payload, contractVersion }
+}
+
+export async function getCatalogChapter(
+  auth: AuthManager,
+  courseId: string,
+  chapterId: string,
+  signal: AbortSignal,
+): Promise<CatalogChapterArticle> {
+  const normalizedCourseId = requireCourseId(courseId)
+  const normalizedChapterId = requireChapterId(chapterId)
+  const response = await auth.request(
+    `/v1/catalog/courses/${encodeURIComponent(normalizedCourseId)}`
+      + `/chapters/${encodeURIComponent(normalizedChapterId)}`,
+    {},
+    signal,
+  )
+  if (!response.ok) throw new UpstreamError(response.status)
+
+  const payload = await readJsonResponse(response)
+  if (!isCatalogChapterArticle(payload)
+    || payload.courseId !== normalizedCourseId
+    || payload.chapterId !== normalizedChapterId) {
+    throw new InvalidResponseError('课程服务返回的章节教材不合法')
+  }
+  if (payload.article !== null) ensureFigureRefs(payload.article.markdown, payload.figures)
   return payload
+}
+
+/** 正文只允许 figure: 稳定引用；引用了未下发图示即视为数据损坏。 */
+function ensureFigureRefs(markdown: string, figures: Record<string, ChapterFigure>): void {
+  for (const match of markdown.matchAll(/!\[[^\]\n]*\]\(figure:([A-Za-z0-9._-]{1,64})\)/g)) {
+    const figureId = match[1]
+    if (figureId === undefined || !Object.prototype.hasOwnProperty.call(figures, figureId)) {
+      throw new InvalidResponseError('章节教材引用了未下发的图示')
+    }
+  }
 }
 
 export async function getKnowledgePoint(
